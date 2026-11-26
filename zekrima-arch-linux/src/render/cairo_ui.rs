@@ -1,9 +1,13 @@
-//! Native Cairo + PangoCairo renderer for Zekrima on Arch Linux / CachyOS.
+//! Native Cairo + PangoCairo renderer for Zekrima Personal Assistant v0.3.0 on Arch Linux / CachyOS.
 //!
-//! Full parity with Windows v0.2.0:
-//! - Collapsed pill (bold clock, Zekrima / album art, 5-bar PipeWire FFT music
-//!   equalizer, running Pomodoro countdown, Pillar notification badge)
-//! - Unified 5-tab Expanded Island (`Media`, `Timer`, `Clip`, `Sys`, `Notifs`)
+//! Full parity with Windows v0.3.0:
+//! - Collapsed pill with animated mini Zeki, bold clock, PipeWire FFT music equalizer,
+//!   Pomodoro countdown, active Assistant state pill, and Pillar notification badge
+//! - Unified 6-tab Expanded Island (`Zeki`, `Media`, `Timer`, `Clip`, `Sys`, `Notifs`)
+//! - Persistent Zeki Companion Dock across all sub-menus (`Chat`, `Voice`, `Screen/Incog`)
+//! - Media logo positioned top-left above the bold clock
+//! - Native scrollable & double-click-expandable multi-turn AI Chat box (`520x310` <-> `640x470`)
+//!   with file attachment chip, live `● MIC` / `● SCREEN` indicators, and `Insert`/`Copy`/`Clear`
 //! - Incoming Pillar notification toast & Volume/Brightness HUD
 
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -16,14 +20,19 @@ use gtk4::prelude::*;
 
 use crate::layout::{CANVAS_HEIGHT_LOGICAL, CANVAS_WIDTH_LOGICAL, PILL_TOP_LOGICAL};
 use crate::render::widgets::{
-    app_accent_rgb, app_initial, clip_row_rect, control_rect, expansion_progress,
-    format_relative_time, notif_card_dismiss_rect, notif_card_rect, smoothstep, tab_rect,
-    timer_preset_rect, ExpandedTab, HitTarget, RectF, ALL_TABS, ARTIST_BOX, CLIP_CLEAR_BTN,
-    CLIP_MAX_VISIBLE, COLLAPSED_ART, CONTROLS_TOP, EQUALIZER_BAR_COUNT, EQUALIZER_BAR_GAP,
-    EQUALIZER_BAR_WIDTH, EQUALIZER_RIGHT, EXPANDED_ART, NOTIF_CARD_MAX_VISIBLE, NOTIF_CLEAR_BTN,
-    TIMER_PROGRESS_BAR, TIMER_RESET_BTN, TIMER_TOGGLE_BTN, TITLE_BOX, TOAST_AVATAR,
-    TOAST_DISMISS_BTN, TOAST_PROGRESS_RECT,
+    app_accent_rgb, app_initial, chat_layout, clip_row_rect, control_rect, expansion_progress,
+    format_relative_time, notif_card_dismiss_rect, notif_card_rect, smoothstep,
+    tab_rect_for_width, timer_preset_rect, zeki_state_btn_rect, ExpandedTab, HitTarget, RectF,
+    ALL_TABS, ARTIST_BOX, CLIP_CLEAR_BTN, CLIP_MAX_VISIBLE, COLLAPSED_ART, CONTROLS_TOP,
+    EQUALIZER_BAR_COUNT, EQUALIZER_BAR_GAP, EQUALIZER_BAR_WIDTH, EQUALIZER_RIGHT, EXPANDED_ART,
+    MEDIA_CLOCK_BOX, NOTIF_CARD_MAX_VISIBLE, NOTIF_CLEAR_BTN, TIMER_PROGRESS_BAR, TIMER_RESET_BTN,
+    TIMER_TOGGLE_BTN, TITLE_BOX, TOAST_AVATAR, TOAST_DISMISS_BTN, TOAST_PROGRESS_RECT,
+    ZEKI_CFG_BTN_CHAT, ZEKI_CFG_BTN_PREVIEW, ZEKI_CHAT_BTN_PREVIEW, ZEKI_DOCK_CHAT_BTN,
+    ZEKI_DOCK_MIC_BTN, ZEKI_DOCK_PRIVACY_BTN, ZEKI_DOCK_RECT, ZEKI_MIC_BTN_CHAT,
+    ZEKI_MIC_BTN_PREVIEW, ZEKI_PRIVACY_BTN_CHAT, ZEKI_PRIVACY_BTN_PREVIEW, ZEKI_STAGE_RECT,
 };
+use crate::render::zeki::{ZekiEngine, ALL_ZEKI_STATES};
+use crate::services::assistant::{AssistantPhase, AssistantSnapshot};
 use crate::services::media::{MediaControl, MediaInfo};
 use crate::services::notifications::{NotificationItem, NotificationSnapshot};
 use crate::services::pomodoro::{PomodoroTimer, TIMER_PRESETS_SECS};
@@ -49,11 +58,23 @@ pub struct Frame<'a> {
     pub clip_items: &'a [String],
     pub clip_copied_flash: bool,
     pub sys_stats: &'a SystemStats,
+    pub zeki: &'a ZekiEngine,
+    pub assistant: &'a AssistantSnapshot,
+    pub assistant_chat_open: bool,
+    pub chat_large: bool,
+    pub chat_input: &'a str,
+    pub chat_focused: bool,
+    pub chat_scroll_offset: f32,
+    pub chat_copied_flash: bool,
+    pub chat_attached_label: Option<&'a str>,
+    pub ptt_hotkey_short: &'a str,
+    pub auto_hidden: bool,
 }
 
 pub struct CairoRenderer {
     art_revision: u64,
     art_pixbuf: Option<Pixbuf>,
+    last_chat_max_scroll: f32,
 }
 
 impl CairoRenderer {
@@ -61,7 +82,12 @@ impl CairoRenderer {
         Self {
             art_revision: 0,
             art_pixbuf: None,
+            last_chat_max_scroll: 0.0,
         }
+    }
+
+    pub fn last_chat_max_scroll(&self) -> f32 {
+        self.last_chat_max_scroll
     }
 
     pub fn prepare_art(&mut self, media: &MediaInfo) {
@@ -86,6 +112,16 @@ impl CairoRenderer {
         let _ = cr.paint();
         cr.set_operator(cairo::Operator::Over);
 
+        if frame.auto_hidden {
+            // Subtle thin reveal strip at very top center so user knows where to hover
+            let strip_w = 72.0;
+            let sx = (CANVAS_WIDTH_LOGICAL as f64 - strip_w) / 2.0;
+            rounded_rect_path(cr, sx, 1.0, strip_w, 3.0, 1.5);
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.16);
+            let _ = cr.fill();
+            return;
+        }
+
         let width = frame.width.clamp(1.0, CANVAS_WIDTH_LOGICAL) as f64;
         let height = frame.height.clamp(1.0, CANVAS_HEIGHT_LOGICAL) as f64;
         let radius = (frame.radius as f64).clamp(0.0, width.min(height) / 2.0);
@@ -99,6 +135,7 @@ impl CairoRenderer {
         let now = std::time::Instant::now();
         let hud_visible = frame.system.hud.is_visible(now);
         let toast_visible = frame.notification.is_toast_visible(now);
+        let (zr, zg, zb) = frame.zeki.accent_color();
 
         let inset = radius.max(14.0);
         if width > inset * 2.0 + 4.0 {
@@ -109,6 +146,11 @@ impl CairoRenderer {
                     cr.set_source_rgba(r, g, b, 0.65);
                     let _ = cr.fill();
                 }
+            } else if frame.expanded && frame.expanded_tab == ExpandedTab::Zeki
+                || frame.zeki.state().is_assistant_active()
+            {
+                cr.set_source_rgba(zr, zg, zb, 0.68);
+                let _ = cr.fill();
             } else {
                 cr.set_source_rgba(ACCENT_RED.0, ACCENT_RED.1, ACCENT_RED.2, 0.42);
                 let _ = cr.fill();
@@ -138,8 +180,11 @@ impl CairoRenderer {
         } else if frame.expanded || expanded_progress >= 0.28 {
             let alpha = smoothstep(((expanded_progress - 0.15) / 0.85).clamp(0.0, 1.0)) as f64;
             if alpha > 0.01 {
-                draw_tab_bar(cr, left, top, frame, alpha);
+                draw_tab_bar(cr, left, top, width as f32, frame, alpha);
                 match frame.expanded_tab {
+                    ExpandedTab::Zeki => {
+                        self.draw_zeki_panel(cr, left, top, width as f32, height as f32, frame, alpha);
+                    }
                     ExpandedTab::Media => {
                         if frame.media.has_session {
                             self.draw_expanded_media(cr, left, top, frame, alpha);
@@ -149,7 +194,6 @@ impl CairoRenderer {
                                 left,
                                 top,
                                 width,
-                                height,
                                 frame.system,
                                 frame.notification,
                                 alpha,
@@ -186,10 +230,15 @@ impl CairoRenderer {
                         );
                     }
                 }
+                if frame.expanded_tab != ExpandedTab::Zeki {
+                    draw_zeki_companion_dock(cr, left, top, frame, alpha);
+                }
             }
         } else {
             let collapsed_alpha = (1.0 - expanded_progress * 3.5).clamp(0.0, 1.0) as f64;
-            if frame.media.has_session {
+            if frame.zeki.state().is_assistant_active() {
+                self.draw_collapsed_assistant(cr, left, top, width, height, frame, collapsed_alpha);
+            } else if frame.media.has_session {
                 self.draw_collapsed_media(cr, left, top, width, height, frame, collapsed_alpha);
             } else {
                 self.draw_collapsed_idle(cr, left, top, width, height, frame, collapsed_alpha);
@@ -202,6 +251,67 @@ impl CairoRenderer {
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
         cr.set_line_width(1.0);
         let _ = cr.stroke();
+    }
+
+    fn draw_collapsed_assistant(
+        &self,
+        cr: &cairo::Context,
+        ox: f64,
+        oy: f64,
+        pill_w: f64,
+        pill_h: f64,
+        frame: &Frame,
+        alpha: f64,
+    ) {
+        frame.zeki.draw(cr, ox + 22.0, oy + pill_h / 2.0, 11.5, alpha, true);
+        let (zr, zg, zb) = frame.zeki.accent_color();
+        let label = match frame.assistant.phase {
+            AssistantPhase::Listening => "Listening...",
+            AssistantPhase::Transcribing => "Transcribing...",
+            AssistantPhase::Thinking => "Thinking...",
+            AssistantPhase::Speaking => "Speaking...",
+            AssistantPhase::Error => "Assistant Error",
+            _ => frame.zeki.state().collapsed_tag(),
+        };
+        draw_text_centered_v(
+            cr,
+            label,
+            ox + 40.0,
+            oy,
+            pill_w - 92.0,
+            pill_h,
+            12.5,
+            true,
+            pango::Alignment::Left,
+            (zr * 0.45 + 0.55, zg * 0.45 + 0.55, zb * 0.45 + 0.55, alpha),
+        );
+
+        let badge = if frame.assistant.phase.is_listening() {
+            "● MIC"
+        } else if frame.assistant.screen_capturing_now {
+            "● SCR"
+        } else {
+            &frame.assistant.provider_label
+        };
+        let badge_col = if frame.assistant.phase.is_listening() {
+            (0.13, 0.85, 0.94, alpha)
+        } else if frame.assistant.screen_capturing_now {
+            (0.98, 0.65, 0.25, alpha)
+        } else {
+            (1.0, 1.0, 1.0, 0.65 * alpha)
+        };
+        draw_text_centered_v(
+            cr,
+            badge,
+            ox + pill_w - 58.0,
+            oy,
+            50.0,
+            pill_h,
+            10.5,
+            true,
+            pango::Alignment::Right,
+            badge_col,
+        );
     }
 
     fn draw_collapsed_media(
@@ -300,9 +410,8 @@ impl CairoRenderer {
         frame: &Frame,
         alpha: f64,
     ) {
-        cr.arc(ox + 18.0, oy + pill_h / 2.0, 4.0, 0.0, 2.0 * PI);
-        cr.set_source_rgba(ACCENT_RED.0, ACCENT_RED.1, ACCENT_RED.2, 0.95 * alpha);
-        let _ = cr.fill();
+        // Animated mini Zeki mascot right in the idle collapsed pill
+        frame.zeki.draw(cr, ox + 19.0, oy + pill_h / 2.0, 10.2, alpha, true);
 
         let clock = current_clock_string();
         let unread = frame.notification.unread_count();
@@ -311,11 +420,11 @@ impl CairoRenderer {
             draw_text_centered_v(
                 cr,
                 &frame.timer.formatted(),
-                ox + 28.0,
+                ox + 34.0,
                 oy,
-                64.0,
+                62.0,
                 pill_h,
-                16.0,
+                15.5,
                 true,
                 pango::Alignment::Center,
                 (ACCENT_RED.0, ACCENT_RED.1, ACCENT_RED.2, alpha),
@@ -330,9 +439,9 @@ impl CairoRenderer {
                 draw_text_centered_v(
                     cr,
                     &clock,
-                    ox + pill_w - 74.0,
+                    ox + pill_w - 72.0,
                     oy,
-                    66.0,
+                    64.0,
                     pill_h,
                     16.0,
                     true,
@@ -347,7 +456,7 @@ impl CairoRenderer {
             draw_text_centered_v(
                 cr,
                 &clock,
-                ox + 30.0,
+                ox + 36.0,
                 oy,
                 68.0,
                 pill_h,
@@ -364,22 +473,22 @@ impl CairoRenderer {
         } else {
             draw_text_centered_v(
                 cr,
-                "Zekrima",
-                ox + 29.0,
+                frame.zeki.state().collapsed_tag(),
+                ox + 36.0,
                 oy,
-                72.0,
+                66.0,
                 pill_h,
-                12.5,
+                12.0,
                 true,
                 pango::Alignment::Left,
-                (1.0, 1.0, 1.0, 0.82 * alpha),
+                (1.0, 1.0, 1.0, 0.84 * alpha),
             );
             draw_text_centered_v(
                 cr,
                 &clock,
-                ox + pill_w - 74.0,
+                ox + pill_w - 72.0,
                 oy,
-                66.0,
+                64.0,
                 pill_h,
                 16.5,
                 true,
@@ -387,6 +496,457 @@ impl CairoRenderer {
                 (1.0, 1.0, 1.0, 0.98 * alpha),
             );
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_zeki_panel(
+        &mut self,
+        cr: &cairo::Context,
+        ox: f64,
+        oy: f64,
+        pill_w: f32,
+        pill_h: f32,
+        frame: &Frame,
+        alpha: f64,
+    ) {
+        let (zr, zg, zb) = frame.zeki.accent_color();
+        let stage = ZEKI_STAGE_RECT;
+        let stage_hovered = frame.hovered_target == Some(HitTarget::ZekiPoke);
+
+        rounded_rect_path(
+            cr,
+            ox + stage.left as f64,
+            oy + stage.top as f64,
+            stage.width() as f64,
+            stage.height() as f64,
+            18.0,
+        );
+        cr.set_source_rgba(zr, zg, zb, if stage_hovered { 0.16 } else { 0.08 } * alpha);
+        let _ = cr.fill_preserve();
+        cr.set_source_rgba(zr, zg, zb, 0.35 * alpha);
+        cr.set_line_width(1.0);
+        let _ = cr.stroke();
+
+        let (scx, scy) = stage.center();
+        frame.zeki.draw(
+            cr,
+            ox + scx as f64,
+            oy + scy as f64 + 3.0,
+            26.0,
+            alpha,
+            false,
+        );
+
+        // Live hardware indicator badge inside stage top-right
+        if frame.assistant.phase.is_listening() || frame.assistant.screen_capturing_now {
+            let (ind_txt, ind_col) = if frame.assistant.phase.is_listening() {
+                ("● MIC", (0.13, 0.85, 0.94, alpha))
+            } else {
+                ("● SCR", (0.98, 0.65, 0.25, alpha))
+            };
+            draw_text(
+                cr,
+                ind_txt,
+                ox + stage.left as f64 + 6.0,
+                oy + stage.top as f64 + 5.0,
+                stage.width() as f64 - 12.0,
+                9.5,
+                true,
+                pango::Alignment::Right,
+                ind_col,
+            );
+        }
+
+        let listening = frame.assistant.phase.is_listening();
+        let screen_on = frame.assistant.screen_access_enabled;
+
+        if !frame.assistant_chat_open {
+            // Preview mode (440x198)
+            draw_text(
+                cr,
+                "Zeki Assistant",
+                ox + 132.0,
+                oy + 45.0,
+                84.0,
+                13.0,
+                true,
+                pango::Alignment::Left,
+                (1.0, 1.0, 1.0, 0.96 * alpha),
+            );
+            let sub = format!(
+                "{}: {} • {}",
+                frame.zeki.state().label(),
+                frame.zeki.state().status_line(),
+                frame.ptt_hotkey_short
+            );
+            draw_text(
+                cr,
+                &sub,
+                ox + 132.0,
+                oy + 74.0,
+                290.0,
+                11.0,
+                false,
+                pango::Alignment::Left,
+                (1.0, 1.0, 1.0, 0.68 * alpha),
+            );
+
+            draw_tinted_pill(
+                cr,
+                ox,
+                oy,
+                ZEKI_CHAT_BTN_PREVIEW,
+                "Chat",
+                (zr, zg, zb),
+                frame.hovered_target == Some(HitTarget::ZekiOpenChat),
+                true,
+                alpha,
+            );
+            draw_tinted_pill(
+                cr,
+                ox,
+                oy,
+                ZEKI_MIC_BTN_PREVIEW,
+                if listening { "Stop" } else { "Voice" },
+                if listening { ACCENT_RED } else { (0.13, 0.83, 0.93) },
+                frame.hovered_target == Some(HitTarget::ZekiMicToggle),
+                listening,
+                alpha,
+            );
+            draw_action_pill(
+                cr,
+                ox,
+                oy,
+                ZEKI_CFG_BTN_PREVIEW,
+                "Config",
+                frame.hovered_target == Some(HitTarget::ZekiOpenConfig),
+                alpha,
+            );
+            draw_tinted_pill(
+                cr,
+                ox,
+                oy,
+                ZEKI_PRIVACY_BTN_PREVIEW,
+                if screen_on { "Screen: ON" } else { "Incognito" },
+                if screen_on {
+                    (0.18, 0.80, 0.52)
+                } else {
+                    (0.95, 0.58, 0.18)
+                },
+                frame.hovered_target == Some(HitTarget::ZekiTogglePrivacy),
+                !screen_on,
+                alpha,
+            );
+
+            for (i, &state) in ALL_ZEKI_STATES.iter().enumerate() {
+                let rect = zeki_state_btn_rect(i);
+                let active = frame.zeki.state() == state;
+                let hov = frame.hovered_target == Some(HitTarget::ZekiSelectState(state));
+                let (sr, sg, sb) = state.accent_rgb();
+                draw_tinted_pill(
+                    cr,
+                    ox,
+                    oy,
+                    rect,
+                    state.short_label(),
+                    (sr as f64, sg as f64, sb as f64),
+                    hov,
+                    active,
+                    alpha,
+                );
+            }
+            return;
+        }
+
+        // Chat Mode (520x310 normal or 640x470 large on double-click)
+        let has_file = frame.chat_attached_label.is_some();
+        let cl = chat_layout(pill_w, pill_h, has_file);
+
+        // Left column controls
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            ZEKI_MIC_BTN_CHAT,
+            if listening { "Stop Mic" } else { "Voice" },
+            if listening { ACCENT_RED } else { (0.13, 0.83, 0.93) },
+            frame.hovered_target == Some(HitTarget::ZekiMicToggle),
+            listening,
+            alpha,
+        );
+        draw_action_pill(
+            cr,
+            ox,
+            oy,
+            ZEKI_CFG_BTN_CHAT,
+            "Config",
+            frame.hovered_target == Some(HitTarget::ZekiOpenConfig),
+            alpha,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            ZEKI_PRIVACY_BTN_CHAT,
+            if screen_on { "Screen: ON" } else { "Incognito" },
+            if screen_on {
+                (0.18, 0.80, 0.52)
+            } else {
+                (0.95, 0.58, 0.18)
+            },
+            frame.hovered_target == Some(HitTarget::ZekiTogglePrivacy),
+            !screen_on,
+            alpha,
+        );
+
+        // Right column header
+        let hdr_text = if frame.chat_copied_flash {
+            "Copied!".to_string()
+        } else {
+            format!("{} • {}", frame.assistant.provider_label, frame.ptt_hotkey_short)
+        };
+        let hdr_col = if frame.chat_copied_flash {
+            (0.20, 0.86, 0.50, alpha)
+        } else {
+            (1.0, 1.0, 1.0, 0.80 * alpha)
+        };
+        draw_text_centered_v(
+            cr,
+            &hdr_text,
+            ox + 134.0,
+            oy + 45.0,
+            (cl.expand_btn.left - 138.0).max(50.0) as f64,
+            21.0,
+            11.0,
+            true,
+            pango::Alignment::Left,
+            hdr_col,
+        );
+
+        draw_action_pill(
+            cr,
+            ox,
+            oy,
+            cl.expand_btn,
+            if frame.chat_large { "Small" } else { "Large" },
+            frame.hovered_target == Some(HitTarget::ZekiChatToggleSize),
+            alpha,
+        );
+        let has_reply = !frame.assistant.reply.is_empty();
+        if has_reply {
+            draw_tinted_pill(
+                cr,
+                ox,
+                oy,
+                cl.insert_btn,
+                "Insert",
+                (0.20, 0.80, 0.50),
+                frame.hovered_target == Some(HitTarget::ZekiInsertReply),
+                false,
+                alpha,
+            );
+            draw_action_pill(
+                cr,
+                ox,
+                oy,
+                cl.copy_btn,
+                "Copy",
+                frame.hovered_target == Some(HitTarget::ZekiCopyReply),
+                alpha,
+            );
+        } else if frame.assistant.error.is_some() {
+            draw_action_pill(
+                cr,
+                ox,
+                oy,
+                cl.copy_btn,
+                "Setup",
+                frame.hovered_target == Some(HitTarget::ZekiOpenConfig),
+                alpha,
+            );
+        }
+        draw_action_pill(
+            cr,
+            ox,
+            oy,
+            cl.clear_btn,
+            "Clear",
+            frame.hovered_target == Some(HitTarget::ZekiClearChat),
+            alpha,
+        );
+
+        // Scrollable multi-turn chat card
+        let cx = ox + cl.card.left as f64;
+        let cy = oy + cl.card.top as f64;
+        let cw = cl.card.width() as f64;
+        let ch = cl.card.height() as f64;
+
+        rounded_rect_path(cr, cx, cy, cw, ch, 12.0);
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.055 * alpha);
+        let _ = cr.fill_preserve();
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.12 * alpha);
+        cr.set_line_width(1.0);
+        let _ = cr.stroke();
+
+        // Build formatted multi-turn conversation transcript
+        let body_text = build_chat_display_text(frame.assistant);
+        let pad = 10.0;
+        let inner_w = (cw - pad * 2.0 - 8.0).max(40.0);
+        let inner_h = (ch - pad * 2.0).max(20.0);
+
+        let layout = pangocairo::functions::create_layout(cr);
+        let mut desc = pango::FontDescription::from_string("Sans");
+        desc.set_absolute_size(12.0 * pango::SCALE as f64);
+        layout.set_font_description(Some(&desc));
+        layout.set_width((inner_w * pango::SCALE as f64) as i32);
+        layout.set_wrap(pango::WrapMode::WordChar);
+        layout.set_text(&body_text);
+
+        let (_, text_h_px) = layout.pixel_size();
+        let max_scroll = ((text_h_px as f64 - inner_h).max(0.0)) as f32;
+        self.last_chat_max_scroll = max_scroll;
+        let clamped_scroll = frame.chat_scroll_offset.clamp(0.0, max_scroll) as f64;
+
+        let _ = cr.save();
+        rounded_rect_path(cr, cx + 2.0, cy + 2.0, cw - 4.0, ch - 4.0, 10.0);
+        cr.clip();
+
+        let text_col = if frame.assistant.error.is_some()
+            && frame.assistant.messages.is_empty()
+            && frame.assistant.reply.is_empty()
+        {
+            (1.0, 0.55, 0.58, 0.96 * alpha)
+        } else {
+            (1.0, 1.0, 1.0, 0.92 * alpha)
+        };
+        cr.set_source_rgba(text_col.0, text_col.1, text_col.2, text_col.3);
+        cr.move_to(cx + pad, cy + pad - clamped_scroll);
+        pangocairo::functions::show_layout(cr, &layout);
+        let _ = cr.restore();
+
+        // Scrollbar thumb when content overflows
+        if max_scroll > 1.0 {
+            let track_x = cx + cw - 7.0;
+            let track_y = cy + 8.0;
+            let track_h = (ch - 16.0).max(16.0);
+            rounded_rect_path(cr, track_x, track_y, 3.5, track_h, 1.75);
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.12 * alpha);
+            let _ = cr.fill();
+
+            let frac_vis = (inner_h / text_h_px.max(1) as f64).clamp(0.16, 1.0);
+            let thumb_h = (track_h * frac_vis).max(18.0);
+            let scroll_ratio = (clamped_scroll / max_scroll as f64).clamp(0.0, 1.0);
+            let thumb_y = track_y + (track_h - thumb_h) * scroll_ratio;
+            rounded_rect_path(cr, track_x, thumb_y, 3.5, thumb_h, 1.75);
+            cr.set_source_rgba(zr, zg, zb, 0.78 * alpha);
+            let _ = cr.fill();
+        }
+
+        // Attached file chip
+        if let Some(file_lbl) = frame.chat_attached_label {
+            let chip = cl.file_chip;
+            let hov = frame.hovered_target == Some(HitTarget::ZekiRemoveFile);
+            rounded_rect_path(
+                cr,
+                ox + chip.left as f64,
+                oy + chip.top as f64,
+                chip.width() as f64,
+                chip.height() as f64,
+                8.0,
+            );
+            cr.set_source_rgba(zr, zg, zb, if hov { 0.28 } else { 0.16 } * alpha);
+            let _ = cr.fill();
+            let chip_txt = format!("File: {file_lbl}  (klik untuk hapus)");
+            draw_text_centered_v(
+                cr,
+                &chip_txt,
+                ox + chip.left as f64 + 8.0,
+                oy + chip.top as f64,
+                chip.width() as f64 - 16.0,
+                chip.height() as f64,
+                10.5,
+                true,
+                pango::Alignment::Left,
+                (1.0, 1.0, 1.0, 0.92 * alpha),
+            );
+        }
+
+        // Attach file button
+        draw_action_pill(
+            cr,
+            ox,
+            oy,
+            cl.attach_btn,
+            "+ File",
+            frame.hovered_target == Some(HitTarget::ZekiAttachFile),
+            alpha,
+        );
+
+        // Chat text input field
+        let inp = cl.input;
+        rounded_rect_path(
+            cr,
+            ox + inp.left as f64,
+            oy + inp.top as f64,
+            inp.width() as f64,
+            inp.height() as f64,
+            10.0,
+        );
+        cr.set_source_rgba(
+            1.0,
+            1.0,
+            1.0,
+            if frame.chat_focused { 0.12 } else { 0.07 } * alpha,
+        );
+        let _ = cr.fill_preserve();
+        if frame.chat_focused {
+            cr.set_source_rgba(zr, zg, zb, 0.80 * alpha);
+            cr.set_line_width(1.3);
+        } else {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.16 * alpha);
+            cr.set_line_width(1.0);
+        }
+        let _ = cr.stroke();
+
+        let (display_inp, inp_col) = if frame.chat_input.is_empty() {
+            (
+                if frame.chat_focused {
+                    "Ketik pesan lalu Enter...|".to_string()
+                } else {
+                    "Klik di sini untuk chat (2x klik card = perbesar)...".to_string()
+                },
+                (1.0, 1.0, 1.0, 0.45 * alpha),
+            )
+        } else if frame.chat_focused {
+            (format!("{}|", frame.chat_input), (1.0, 1.0, 1.0, 0.96 * alpha))
+        } else {
+            (frame.chat_input.to_string(), (1.0, 1.0, 1.0, 0.92 * alpha))
+        };
+        draw_text_centered_v(
+            cr,
+            &display_inp,
+            ox + inp.left as f64 + 10.0,
+            oy + inp.top as f64,
+            (inp.width() as f64 - 20.0).max(20.0),
+            inp.height() as f64,
+            12.0,
+            false,
+            pango::Alignment::Left,
+            inp_col,
+        );
+
+        // Send button
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.send_btn,
+            "Send",
+            (zr, zg, zb),
+            frame.hovered_target == Some(HitTarget::ZekiChatSend),
+            !frame.chat_input.trim().is_empty(),
+            alpha,
+        );
     }
 
     fn draw_expanded_media(
@@ -397,7 +957,20 @@ impl CairoRenderer {
         frame: &Frame,
         alpha: f64,
     ) {
-        self.draw_art(cr, ox, oy, &EXPANDED_ART, 14.0);
+        // Media logo top-left directly above the bold clock
+        self.draw_art(cr, ox, oy, &EXPANDED_ART, 12.0);
+        draw_text_centered_v(
+            cr,
+            &current_clock_string(),
+            ox + MEDIA_CLOCK_BOX.left as f64,
+            oy + MEDIA_CLOCK_BOX.top as f64,
+            MEDIA_CLOCK_BOX.width() as f64,
+            MEDIA_CLOCK_BOX.height() as f64,
+            18.5,
+            true,
+            pango::Alignment::Center,
+            (1.0, 1.0, 1.0, 0.96 * alpha),
+        );
 
         let title = if frame.media.title.trim().is_empty() {
             "Unknown title"
@@ -410,7 +983,7 @@ impl CairoRenderer {
             ox + TITLE_BOX.left as f64,
             oy + TITLE_BOX.top as f64,
             TITLE_BOX.width() as f64,
-            18.5,
+            17.5,
             true,
             pango::Alignment::Left,
             (1.0, 1.0, 1.0, alpha),
@@ -421,7 +994,7 @@ impl CairoRenderer {
             ox + ARTIST_BOX.left as f64,
             oy + ARTIST_BOX.top as f64,
             ARTIST_BOX.width() as f64,
-            14.5,
+            13.5,
             false,
             pango::Alignment::Left,
             (1.0, 1.0, 1.0, 0.65 * alpha),
@@ -441,24 +1014,11 @@ impl CairoRenderer {
             &frame.eq_levels,
             frame.media.is_playing,
             alpha,
-            344.0,
+            418.0,
             4.0,
             3.5,
             4.0,
             20.0,
-        );
-
-        draw_text_centered_v(
-            cr,
-            &current_clock_string(),
-            ox + 350.0,
-            oy + CONTROLS_TOP as f64,
-            74.0,
-            30.0,
-            18.5,
-            true,
-            pango::Alignment::Right,
-            (1.0, 1.0, 1.0, 0.96 * alpha),
         );
     }
 
@@ -493,13 +1053,13 @@ impl CairoRenderer {
         let _ = cr.restore();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_idle_expanded(
         &self,
         cr: &cairo::Context,
         ox: f64,
         oy: f64,
         pill_w: f64,
-        pill_h: f64,
         system: &SystemSnapshot,
         notif: &NotificationSnapshot,
         alpha: f64,
@@ -513,7 +1073,7 @@ impl CairoRenderer {
             cr,
             &clock,
             ox + pad_x,
-            oy + 48.0,
+            oy + 46.0,
             125.0,
             34.0,
             true,
@@ -531,15 +1091,15 @@ impl CairoRenderer {
             cr,
             &sub,
             ox + pad_x + 118.0,
-            oy + 62.0,
+            oy + 60.0,
             content_w - 122.0,
-            14.5,
+            14.0,
             false,
             pango::Alignment::Left,
             (1.0, 1.0, 1.0, 0.76 * alpha),
         );
 
-        let bar_y = oy + pill_h - 24.0;
+        let bar_y = oy + 136.0;
         let bar_h = 6.0;
         let vol_lbl = if system.muted {
             "Volume  •  Muted".to_string()
@@ -681,6 +1241,7 @@ impl CairoRenderer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_notifications_panel(
         &self,
         cr: &cairo::Context,
@@ -899,10 +1460,163 @@ impl CairoRenderer {
     }
 }
 
-fn draw_tab_bar(cr: &cairo::Context, ox: f64, oy: f64, frame: &Frame, alpha: f64) {
+fn build_chat_display_text(assistant: &AssistantSnapshot) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for msg in &assistant.messages {
+        let prefix = if msg.is_user { "You: " } else { "Zeki: " };
+        parts.push(format!("{prefix}{}", msg.text));
+    }
+
+    match assistant.phase {
+        AssistantPhase::Listening => {
+            parts.push("Zeki: Mendengarkan suara Anda...".to_string());
+        }
+        AssistantPhase::Transcribing => {
+            parts.push("Zeki: Mentranskripsi suara...".to_string());
+        }
+        AssistantPhase::Thinking => {
+            if !assistant.transcript.is_empty()
+                && assistant
+                    .messages
+                    .last()
+                    .map(|m| !m.is_user || m.text != assistant.transcript)
+                    .unwrap_or(true)
+            {
+                parts.push(format!("You: {}", assistant.transcript));
+            }
+            parts.push("Zeki: Sedang berpikir...".to_string());
+        }
+        AssistantPhase::Speaking => {
+            if !assistant.reply.is_empty()
+                && assistant
+                    .messages
+                    .last()
+                    .map(|m| m.is_user || m.text != assistant.reply)
+                    .unwrap_or(true)
+            {
+                parts.push(format!("Zeki: {}", assistant.reply));
+            }
+        }
+        AssistantPhase::Error => {
+            if let Some(err) = &assistant.error {
+                parts.push(format!("Error: {err}"));
+            }
+        }
+        _ => {}
+    }
+
+    if parts.is_empty() {
+        return "Halo! Ketik pertanyaan di bawah, klik + File untuk melampirkan dokumen/gambar/PDF, atau klik Voice untuk berbicara dengan Zeki.\n(Klik 2x area ini untuk memperbesar kotak chat)".to_string();
+    }
+
+    parts.join("\n\n")
+}
+
+fn draw_zeki_companion_dock(
+    cr: &cairo::Context,
+    ox: f64,
+    oy: f64,
+    frame: &Frame,
+    alpha: f64,
+) {
+    let dock = ZEKI_DOCK_RECT;
+    let (zr, zg, zb) = frame.zeki.accent_color();
+
+    rounded_rect_path(
+        cr,
+        ox + dock.left as f64,
+        oy + dock.top as f64,
+        dock.width() as f64,
+        dock.height() as f64,
+        14.0,
+    );
+    cr.set_source_rgba(zr, zg, zb, 0.08 * alpha);
+    let _ = cr.fill_preserve();
+    cr.set_source_rgba(zr, zg, zb, 0.28 * alpha);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+
+    frame.zeki.draw(
+        cr,
+        ox + dock.left as f64 + 19.0,
+        oy + dock.top as f64 + dock.height() as f64 / 2.0,
+        10.5,
+        alpha,
+        true,
+    );
+
+    let prompt_lbl = match frame.assistant.phase {
+        AssistantPhase::Listening => "Listening...",
+        AssistantPhase::Thinking => "Thinking...",
+        AssistantPhase::Speaking => "Speaking...",
+        _ => "Ask Zeki anything...",
+    };
+    draw_text_centered_v(
+        cr,
+        prompt_lbl,
+        ox + dock.left as f64 + 38.0,
+        oy + dock.top as f64,
+        158.0,
+        dock.height() as f64,
+        11.0,
+        true,
+        pango::Alignment::Left,
+        (1.0, 1.0, 1.0, 0.80 * alpha),
+    );
+
+    let screen_on = frame.assistant.screen_access_enabled;
+    draw_tinted_pill(
+        cr,
+        ox,
+        oy,
+        ZEKI_DOCK_PRIVACY_BTN,
+        if screen_on { "Screen" } else { "Incog" },
+        if screen_on {
+            (0.18, 0.80, 0.52)
+        } else {
+            (0.95, 0.58, 0.18)
+        },
+        frame.hovered_target == Some(HitTarget::ZekiTogglePrivacy),
+        !screen_on,
+        alpha,
+    );
+    draw_tinted_pill(
+        cr,
+        ox,
+        oy,
+        ZEKI_DOCK_CHAT_BTN,
+        "Chat",
+        (zr, zg, zb),
+        frame.hovered_target == Some(HitTarget::ZekiOpenChat),
+        false,
+        alpha,
+    );
+    let listening = frame.assistant.phase.is_listening();
+    draw_tinted_pill(
+        cr,
+        ox,
+        oy,
+        ZEKI_DOCK_MIC_BTN,
+        if listening { "Stop" } else { "Voice" },
+        if listening { ACCENT_RED } else { (0.13, 0.83, 0.93) },
+        frame.hovered_target == Some(HitTarget::ZekiMicToggle),
+        listening,
+        alpha,
+    );
+}
+
+fn draw_tab_bar(
+    cr: &cairo::Context,
+    ox: f64,
+    oy: f64,
+    pill_w: f32,
+    frame: &Frame,
+    alpha: f64,
+) {
     let unread = frame.notification.unread_count();
+    let (zr, zg, zb) = frame.zeki.accent_color();
     for tab in ALL_TABS {
-        let rect = tab_rect(tab);
+        let rect = tab_rect_for_width(tab, pill_w);
         let active = frame.expanded_tab == tab;
         let hovered = frame.hovered_target == Some(HitTarget::SelectTab(tab));
 
@@ -911,11 +1625,17 @@ fn draw_tab_bar(cr: &cairo::Context, ox: f64, oy: f64, frame: &Frame, alpha: f64
         let w = rect.width() as f64;
         let h = rect.height() as f64;
 
+        let accent = if tab == ExpandedTab::Zeki {
+            (zr, zg, zb)
+        } else {
+            ACCENT_RED
+        };
+
         rounded_rect_path(cr, x, y, w, h, h / 2.0);
         if active {
-            cr.set_source_rgba(ACCENT_RED.0, ACCENT_RED.1, ACCENT_RED.2, 0.28 * alpha);
+            cr.set_source_rgba(accent.0, accent.1, accent.2, 0.28 * alpha);
             let _ = cr.fill_preserve();
-            cr.set_source_rgba(ACCENT_RED.0, ACCENT_RED.1, ACCENT_RED.2, 0.68 * alpha);
+            cr.set_source_rgba(accent.0, accent.1, accent.2, 0.68 * alpha);
             cr.set_line_width(1.0);
             let _ = cr.stroke();
         } else {
@@ -924,6 +1644,7 @@ fn draw_tab_bar(cr: &cairo::Context, ox: f64, oy: f64, frame: &Frame, alpha: f64
         }
 
         let label = match tab {
+            ExpandedTab::Zeki => "Zeki".to_string(),
             ExpandedTab::Media => "Media".to_string(),
             ExpandedTab::Timer => {
                 if frame.timer.running {
@@ -959,7 +1680,7 @@ fn draw_tab_bar(cr: &cairo::Context, ox: f64, oy: f64, frame: &Frame, alpha: f64
             y,
             w,
             h,
-            11.0,
+            10.8,
             true,
             pango::Alignment::Center,
             (1.0, 1.0, 1.0, text_a * alpha),
@@ -1011,7 +1732,6 @@ fn draw_timer_panel(
         color,
     );
 
-    // Start / Pause button
     let toggle_lbl = if timer.running { "Pause" } else { "Start" };
     let toggle_hov = hovered == Some(HitTarget::TimerToggle);
     rounded_rect_path(
@@ -1503,6 +2223,51 @@ fn draw_controls(
     let _ = cr.fill();
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_tinted_pill(
+    cr: &cairo::Context,
+    ox: f64,
+    oy: f64,
+    rect: RectF,
+    label: &str,
+    rgb: (f64, f64, f64),
+    hovered: bool,
+    active: bool,
+    alpha: f64,
+) {
+    let x = ox + rect.left as f64;
+    let y = oy + rect.top as f64;
+    let w = rect.width() as f64;
+    let h = rect.height() as f64;
+
+    rounded_rect_path(cr, x, y, w, h, h / 2.0);
+    let fill_a = if active {
+        if hovered { 0.42 } else { 0.30 }
+    } else if hovered {
+        0.22
+    } else {
+        0.13
+    };
+    cr.set_source_rgba(rgb.0, rgb.1, rgb.2, fill_a * alpha);
+    let _ = cr.fill_preserve();
+    cr.set_source_rgba(rgb.0, rgb.1, rgb.2, if active || hovered { 0.78 } else { 0.40 } * alpha);
+    cr.set_line_width(1.0);
+    let _ = cr.stroke();
+
+    draw_text_centered_v(
+        cr,
+        label,
+        x,
+        y,
+        w,
+        h,
+        10.5,
+        true,
+        pango::Alignment::Center,
+        (1.0, 1.0, 1.0, if active || hovered { 1.0 } else { 0.88 } * alpha),
+    );
+}
+
 fn draw_action_pill(
     cr: &cairo::Context,
     ox: f64,
@@ -1528,7 +2293,7 @@ fn draw_action_pill(
         y,
         w,
         h,
-        11.0,
+        10.5,
         true,
         pango::Alignment::Center,
         (1.0, 1.0, 1.0, if hovered { 1.0 } else { 0.82 } * alpha),

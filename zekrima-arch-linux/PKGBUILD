@@ -1,10 +1,10 @@
 # Maintainer: Zekrima
 pkgname=zekrima
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
-pkgdesc="Native Dynamic Island overlay for Arch Linux / CachyOS (GTK4 + Wayland Layer Shell)"
+pkgdesc="Zekrima Personal Assistant - Native Dynamic Island & AI companion for Arch Linux / CachyOS (GTK4 + Wayland Layer Shell)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/zekrima/Dynamic_Island"
+url="https://github.com/zekrima/zekrima_personal_asisstant"
 license=('MIT')
 depends=(
   'gtk4'
@@ -17,6 +17,13 @@ depends=(
   'wireplumber'
   'dbus'
   'curl'
+)
+optdepends=(
+  'grim: Zero-Retention Screen Vision on Hyprland / Sway / wlroots Wayland'
+  'spectacle: Zero-Retention Screen Vision on KDE Plasma Wayland'
+  'brightnessctl: AI System Control brightness adjustment'
+  'wtype: Explicit Insert button auto-paste on Wayland'
+  'xdotool: Active window title & Insert auto-paste fallback on X11'
 )
 makedepends=(
   'cargo'

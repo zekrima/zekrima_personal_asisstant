@@ -1,8 +1,8 @@
 [package]
 name = "zekrima"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Zekrima - native Dynamic Island overlay for Arch Linux / CachyOS"
+description = "Zekrima Personal Assistant - native Dynamic Island & AI companion for Arch Linux / CachyOS"
 publish = false
 
 [dependencies]

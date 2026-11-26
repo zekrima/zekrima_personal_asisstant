@@ -86,13 +86,29 @@ Atau cari **Zekrima** di Application Launcher (KDE Kickoff / Rofi / Wofi / Fuzze
 | **Klik di luar area pill** | Klik tembus (*click-through*) via `GdkSurface::set_input_region`. |
 | **Klik kanan pada pill** | Menu konteks: `Run at Login`, `Test Notification`, `Quit Zekrima`. |
 
-### 5 Tab Produktivitas (Mode Expanded)
-Saat pill mengembang (`440 × 162`), tersedia 5 tab di bagian atas:
-- **`Media`**: kontrol musik MPRIS2 (album art, judul/artis, Previous/Play-Pause/Next, visualizer PipeWire FFT, jam) atau jam besar + volume saat idle.
+### 6 Tab Produktivitas & Maskot Zeki (`v0.3.0`)
+Saat pill mengembang (`440 × 198`, atau `520 × 310` / `640 × 470` saat Mode Chat), tersedia 6 tab di bagian atas serta **Zeki Companion Dock** yang selalu hadir di bawah seluruh sub-menu:
+- **`Zeki`**: maskot vektor prosedural 7-state (`Idle`, `Sleepy`, `Listening`, `Thinking`, `Speaking`, `Happy`, `Error`), **Mode Chat** scrollable (klik ganda card untuk perbesar `520×310` ↔ `640×470`), lampiran file (`+ File` via XDG Desktop Portal `FileDialog` untuk teks/kode/gambar/PDF), tombol `Insert`/`Copy`/`Clear`, toggle privasi `Screen: ON` / `Incognito`, dan tombol **`Config`** (jendela GTK4 Settings untuk API key BYOK: **Google Gemini 3.8 Flash + TTS**, **OpenRouter Free**, **OpenCode Zen Free**, **NVIDIA NIM Free**, **Groq**, **OpenAI/Custom**, pilihan suara TTS, resolusi Screen Vision Standard/HD, & Auto-Hide).
+- **`Media`**: logo media di pojok kiri atas tepat di atas jam tebal, judul/artis, kontrol MPRIS2, dan visualizer PipeWire FFT.
 - **`Timer`**: Focus / Pomodoro Timer dengan preset **`5m`**, **`15m`**, **`25m`**, **`45m`**, tombol **`Start`/`Pause`** & **`Reset`**, progress bar, indikator countdown di collapsed pill, serta toast notifikasi otomatis saat waktu habis.
 - **`Clip`**: riwayat teks clipboard (`Ctrl+C`) event-driven via GTK4 `gdk::Clipboard`. Klik baris mana saja untuk copy ulang secara instan, atau klik **`Clear`**.
 - **`Sys`**: System Monitor ringkas (**CPU %** dari `/proc/stat`, **Memory** dari `/proc/meminfo`, **Battery/Power** dari `/sys/class/power_supply`) — hanya di-sample saat tab `Sys` dibuka (`0.0%` idle CPU).
 - **`Notifs`**: daftar notifikasi D-Bus bergaya Pillar.
+
+### Global Hotkeys Wayland (Hyprland / KDE Plasma / Sway) & Auto-Hide
+Zekrima Linux mendukung remote CLI IPC melalui `gio::Application` sehingga Anda bisa mengikat shortcut global di compositor Wayland mana pun tanpa membuka jendela ganda:
+- **Toggle Hide / Show**: `zekrima --toggle-hide`
+- **Voice Listening**: `zekrima --voice`
+- **Buka Chat Mode**: `zekrima --chat`
+- **Buka Settings**: `zekrima --settings`
+
+Contoh di `~/.config/hypr/hyprland.conf`:
+```ini
+bind = ALT, H, exec, zekrima --toggle-hide
+bind = ALT, SPACE, exec, zekrima --voice
+bind = ALT, C, exec, zekrima --chat
+```
+Atau aktifkan **Auto-Hide when Idle** lewat menu klik kanan / Settings (pill memudar setelah 4 detik idle dan muncul kembali saat kursor menyentuh tepi tengah atas layar).
 
 ### Jam Tegas & Jelas
 - **Collapsed Pill**: jam **`HH:MM`** berukuran **`16.5px` Bold** putih terang di sebelah label Zekrima / album art.

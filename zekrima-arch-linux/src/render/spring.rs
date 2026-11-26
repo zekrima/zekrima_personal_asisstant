@@ -5,6 +5,10 @@ pub const COLLAPSED_BADGE_WIDTH: f32 = 232.0;
 pub const COLLAPSED_HEIGHT: f32 = 34.0;
 pub const COLLAPSED_RADIUS: f32 = 17.0;
 
+pub const ASSISTANT_WIDTH: f32 = 224.0;
+pub const ASSISTANT_HEIGHT: f32 = 38.0;
+pub const ASSISTANT_RADIUS: f32 = 19.0;
+
 pub const HUD_WIDTH: f32 = 300.0;
 pub const HUD_HEIGHT: f32 = 52.0;
 pub const HUD_RADIUS: f32 = 26.0;
@@ -13,9 +17,18 @@ pub const NOTIFICATION_WIDTH: f32 = 380.0;
 pub const NOTIFICATION_HEIGHT: f32 = 88.0;
 pub const NOTIFICATION_RADIUS: f32 = 26.0;
 
+/// Unified expanded geometry across all 6 tabs (includes persistent Zeki Companion Dock).
 pub const EXPANDED_WIDTH: f32 = 440.0;
-pub const EXPANDED_HEIGHT: f32 = 162.0;
+pub const EXPANDED_HEIGHT: f32 = 198.0;
 pub const EXPANDED_RADIUS: f32 = 28.0;
+
+/// Expanded chat geometry (comfortable scrollable chat box).
+pub const EXPANDED_CHAT_WIDTH: f32 = 520.0;
+pub const EXPANDED_CHAT_HEIGHT: f32 = 310.0;
+
+/// Large expanded chat geometry (toggled by double-clicking the chat box or clicking Expand).
+pub const EXPANDED_CHAT_LARGE_WIDTH: f32 = 640.0;
+pub const EXPANDED_CHAT_LARGE_HEIGHT: f32 = 470.0;
 
 const REST_DISTANCE: f32 = 0.05;
 const REST_VELOCITY: f32 = 0.05;
@@ -80,9 +93,12 @@ impl Spring {
 pub enum PillMode {
     Collapsed,
     CollapsedWithBadge,
+    Assistant,
     Hud,
     Notification,
     Expanded,
+    ExpandedChat,
+    ExpandedChatLarge,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -107,9 +123,18 @@ impl PillSprings {
             PillMode::CollapsedWithBadge => {
                 (COLLAPSED_BADGE_WIDTH, COLLAPSED_HEIGHT, COLLAPSED_RADIUS)
             }
+            PillMode::Assistant => (ASSISTANT_WIDTH, ASSISTANT_HEIGHT, ASSISTANT_RADIUS),
             PillMode::Hud => (HUD_WIDTH, HUD_HEIGHT, HUD_RADIUS),
             PillMode::Notification => (NOTIFICATION_WIDTH, NOTIFICATION_HEIGHT, NOTIFICATION_RADIUS),
             PillMode::Expanded => (EXPANDED_WIDTH, EXPANDED_HEIGHT, EXPANDED_RADIUS),
+            PillMode::ExpandedChat => {
+                (EXPANDED_CHAT_WIDTH, EXPANDED_CHAT_HEIGHT, EXPANDED_RADIUS)
+            }
+            PillMode::ExpandedChatLarge => (
+                EXPANDED_CHAT_LARGE_WIDTH,
+                EXPANDED_CHAT_LARGE_HEIGHT,
+                EXPANDED_RADIUS,
+            ),
         };
         let w_chg = self.width.set_target(w);
         let h_chg = self.height.set_target(h);

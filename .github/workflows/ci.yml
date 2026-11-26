@@ -15,7 +15,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check Windows crate
         working-directory: zekrima-windows
-        run: cargo check --all-targets
+        run: cargo test --all-targets
       - name: Build Windows release
         working-directory: zekrima-windows
         run: cargo build --release
@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check Linux crate
         working-directory: zekrima-arch-linux
-        run: cargo check --all-targets
+        run: cargo test --all-targets
       - name: Build Linux release
         working-directory: zekrima-arch-linux
         run: cargo build --release

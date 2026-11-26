@@ -4,7 +4,7 @@ All notable changes to **Zekrima** will be documented in this file.
 
 ## [0.3.0] - 2026-11-26
 
-### Added (Zekrima Personal Assistant — Windows Edition)
+### Added (Zekrima Personal Assistant — Windows & Arch Linux / CachyOS Editions)
 - **Interactive Mascot "Zeki" & 7-State Procedural Animation Engine**:
   - Pure Direct2D vector mascot (`Idle`, `Sleepy`, `Listening`, `Thinking`, `Speaking`, `Happy`, `Error`) with 15-minute auto-sleep, poke spark reactions, and audio-reactive music dance.
   - Persistent **Zeki Companion Dock** across all expanded sub-menus (`Media`, `Timer`, `Clip`, `Sys`, `Notifs`) with quick access to **Chat** and **Voice Listening**.
@@ -22,6 +22,10 @@ All notable changes to **Zekrima** will be documented in this file.
   - **Auto-Hide when Idle** (fades out after 4s idle with a 5px top-center reveal strip, `0.0%` CPU when hidden) and customizable **Hide/Show** (`Alt+H`, `Ctrl+Shift+H`, `Alt+X`) & **Push-to-Talk** (`Alt+Space`, `Ctrl+Space`, `Alt+Z`, `Ctrl+Shift+Space`) global hotkeys.
   - Selectable **Gemini TTS Voices** (`Kore`, `Puck`, `Aoede`, `Charon`, `Fenrir`, `Zephyr`).
   - Pre-cached Direct2D `ID2D1StrokeStyle` (eliminating per-frame COM allocations) and low-fps (~8 fps) battery-saver mode when collapsed & `Sleepy`.
+
+- **Arch Linux / CachyOS Full Parity (`zekrima-arch-linux/`)**:
+  - Full Cairo port of the 7-state **Zeki** procedural mascot engine, persistent Companion Dock, 6-tab bar, top-left Media logo above clock, scrollable & double-click expandable Mode Chat (`KeyboardMode::Exclusive` only while typing).
+  - Native GTK4 **Settings Window** (`~/.config/zekrima/assistant.ini` with `0600` perms), PipeWire mic capture (`parec`) + TTS playback (`paplay`/`pw-play`), Zero-Retention Screen Vision (`grim`/`spectacle` + `gdk-pixbuf`), XDG Portal `gtk4::FileDialog` attachments, Linux system tools (`wpctl`, `brightnessctl`, `xdg-open`), and Wayland IPC hotkey commands (`zekrima --toggle-hide`, `--voice`, `--chat`, `--settings`).
 
 ## [0.2.0] - 2026-11-26
 
