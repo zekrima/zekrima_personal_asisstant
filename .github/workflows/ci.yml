@@ -42,7 +42,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check Linux crate
         working-directory: zekrima-arch-linux
-        run: cargo test --all-targets
+        run: |
+          set -o pipefail
+          if ! cargo test --all-targets --message-format=short 2>&1 | tee /tmp/linux-build.log; then
+            grep -E "error(\[E[0-9]+\])?:" /tmp/linux-build.log | head -n 25 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
       - name: Build Linux release
         working-directory: zekrima-arch-linux
         run: cargo build --release
