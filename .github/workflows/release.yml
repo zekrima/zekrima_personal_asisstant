@@ -30,22 +30,22 @@ jobs:
             choco install innosetup -y
           }
           & $iscc "zekrima-windows\installer\zekrima.iss"
-      - name: Package Windows portable zip
+      - name: Stage Windows release assets
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path release-win | Out-Null
+          Copy-Item -Force "zekrima-windows/dist-installer/Zekrima-Setup-x64.exe" "release-win/Zekrima-Setup-x64.exe"
+          Copy-Item -Force "zekrima-windows/target/release/zekrima.exe" "release-win/zekrima.exe"
           Compress-Archive -Path `
             zekrima-windows/target/release/zekrima.exe, `
             zekrima-windows/install-windows.ps1, `
             zekrima-windows/README.md, `
             LICENSE `
-            -DestinationPath zekrima-windows-portable.zip -Force
+            -DestinationPath release-win/zekrima-windows-portable.zip -Force
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          path: |
-            zekrima-windows/dist-installer/Zekrima-Setup-x64.exe
-            zekrima-windows/target/release/zekrima.exe
-            zekrima-windows-portable.zip
+          path: release-win/*
 
   build-arch-linux:
     name: Build Arch Linux / CachyOS Installer & Package
