@@ -6,7 +6,7 @@ description = "Zekrima Personal Assistant - native Dynamic Island & AI companion
 publish = false
 
 [dependencies]
-gtk4 = "0.11"
+gtk4 = { version = "0.11", features = ["v4_10"] }
 gtk4-layer-shell = "0.8"
 pangocairo = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

@@ -6,6 +6,7 @@ pkgdesc="Zekrima Personal Assistant - Native Dynamic Island & AI companion for A
 arch=('x86_64' 'aarch64')
 url="https://github.com/zekrima/zekrima_personal_asisstant"
 license=('MIT')
+options=('!debug')
 depends=(
   'gtk4'
   'gtk4-layer-shell'
