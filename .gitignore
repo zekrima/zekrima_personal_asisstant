@@ -6,6 +6,7 @@
 # Local binaries & distribution archives (published via GitHub Releases)
 dist/
 zekrima-windows/bin/
+zekrima-windows/dist-installer/
 *.exe
 *.zip
 *.rar

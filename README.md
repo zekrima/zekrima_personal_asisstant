@@ -60,32 +60,37 @@
 
 ---
 
-## Quick Start
+## Quick Start & Download Installer
 
-### Windows 11 / 10
-- **Portable**: unduh `zekrima-windows-portable.zip` dari halaman **Releases**, ekstrak, lalu jalankan `zekrima.exe`.
-- **Build dari source**:
-  ```powershell
-  cd zekrima-windows
-  cargo build --release
-  .\target\release\zekrima.exe
-  ```
+Unduh langsung installer siap pakai dari halaman **[GitHub Releases Terbaru](https://github.com/zekrima/zekrima_personal_asisstant/releases/latest)**:
+
+| Platform | File Installer di GitHub Releases | Cara Pasang |
+| :--- | :--- | :--- |
+| **Windows 11 / 10 (Setup GUI)** | `Zekrima-Setup-x64.exe` | Klik ganda untuk install (Start Menu, Desktop shortcut, opsi Startup & Uninstaller) |
+| **Windows 11 / 10 (Portable)** | `zekrima-windows-portable.zip` / `zekrima.exe` | Ekstrak & langsung jalankan `zekrima.exe` |
+| **Windows (1-Perintah PowerShell)** | `install-windows.ps1` | `irm https://raw.githubusercontent.com/zekrima/zekrima_personal_asisstant/main/zekrima-windows/install-windows.ps1 \| iex` |
+| **Arch Linux / CachyOS (Pacman)** | `zekrima-0.3.0-1-x86_64.pkg.tar.zst` | `sudo pacman -U zekrima-0.3.0-1-x86_64.pkg.tar.zst` *(tanpa compile)* |
+| **Linux Pre-Built Binary** | `zekrima-linux-x86_64.tar.gz` | Ekstrak lalu jalankan `./install-binary.sh` |
+| **Arch / CachyOS (Build Source)** | `zekrima-arch-cachyos-src.tar.gz` | Ekstrak lalu jalankan `./install-cachyos.sh` |
+
+### Build Manual dari Source
+
+#### Windows 11 / 10
+```powershell
+cd zekrima-windows
+cargo build --release
+.\target\release\zekrima.exe
+```
 Detail instalasi, izin notifikasi Windows, & pemakaian lengkap: [zekrima-windows/README.md](zekrima-windows/README.md).
 
-### Arch Linux / CachyOS
-- **Instalasi otomatis (1 perintah)**:
-  ```bash
-  cd zekrima-arch-linux
-  chmod +x install-cachyos.sh
-  ./install-cachyos.sh
-  zekrima &
-  ```
-- **Manual via `makepkg`**:
-  ```bash
-  cd zekrima-arch-linux
-  makepkg -si
-  ```
-Detail instalasi Hyprland / KDE Plasma 6 Wayland, autostart, & uninstall: [zekrima-arch-linux/README.md](zekrima-arch-linux/README.md).
+#### Arch Linux / CachyOS
+```bash
+cd zekrima-arch-linux
+chmod +x install-cachyos.sh
+./install-cachyos.sh
+zekrima &
+```
+Detail instalasi Hyprland / KDE Plasma 6 Wayland, hotkey IPC (`--toggle-hide`, `--voice`, `--chat`), & uninstall: [zekrima-arch-linux/README.md](zekrima-arch-linux/README.md).
 
 ---
 

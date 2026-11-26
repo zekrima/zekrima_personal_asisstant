@@ -4,33 +4,51 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build-windows:
-    name: Build Windows Release
+    name: Build Windows Installer & Portable
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build Windows release
+      - name: Run Windows unit tests
+        working-directory: zekrima-windows
+        run: cargo test --all-targets
+      - name: Build Windows release binary
         working-directory: zekrima-windows
         run: cargo build --release
+      - name: Build Windows GUI Setup Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y
+          }
+          & $iscc "zekrima-windows\installer\zekrima.iss"
       - name: Package Windows portable zip
         shell: pwsh
         run: |
-          Compress-Archive -Path zekrima-windows/target/release/zekrima.exe, zekrima-windows/README.md -DestinationPath zekrima-windows-portable.zip -Force
+          Compress-Archive -Path `
+            zekrima-windows/target/release/zekrima.exe, `
+            zekrima-windows/install-windows.ps1, `
+            zekrima-windows/README.md, `
+            LICENSE `
+            -DestinationPath zekrima-windows-portable.zip -Force
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
           path: |
+            zekrima-windows/dist-installer/Zekrima-Setup-x64.exe
             zekrima-windows/target/release/zekrima.exe
             zekrima-windows-portable.zip
 
   build-arch-linux:
-    name: Build Arch Linux / CachyOS Package
+    name: Build Arch Linux / CachyOS Installer & Package
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
@@ -38,34 +56,62 @@ jobs:
       - name: Install Arch dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            git rust cargo pkgconf tar gzip \
-            gtk4 gtk4-layer-shell pango cairo gdk-pixbuf2
+            git rust cargo pkgconf tar gzip zstd \
+            gtk4 gtk4-layer-shell pango cairo gdk-pixbuf2 \
+            playerctl pipewire-pulse wireplumber dbus curl
       - uses: actions/checkout@v4
-      - name: Build Linux release
+      - name: Run Linux unit tests & release build
         working-directory: zekrima-arch-linux
-        run: cargo build --release
+        run: |
+          cargo test --all-targets
+          cargo build --release
+      - name: Build native Arch/CachyOS pacman package (.pkg.tar.zst)
+        run: |
+          useradd -m builder || true
+          cp -r zekrima-arch-linux /tmp/pkgbuild-src
+          chown -R builder:builder /tmp/pkgbuild-src
+          su - builder -c "cd /tmp/pkgbuild-src && makepkg -f --noconfirm --nodeps"
+          cp /tmp/pkgbuild-src/zekrima-*.pkg.tar.zst .
+      - name: Package pre-built Linux binary installer tarball
+        run: |
+          mkdir -p pkg-linux-bin
+          cp zekrima-arch-linux/target/release/zekrima pkg-linux-bin/
+          cp zekrima-arch-linux/zekrima.desktop pkg-linux-bin/
+          cp zekrima-arch-linux/install-binary.sh pkg-linux-bin/
+          cp zekrima-arch-linux/README.md pkg-linux-bin/
+          chmod +x pkg-linux-bin/zekrima pkg-linux-bin/install-binary.sh
+          tar -czf zekrima-linux-x86_64.tar.gz -C pkg-linux-bin .
       - name: Package Arch source + PKGBUILD tarball
         run: |
-          tar --exclude='zekrima-arch-linux/target' -czf zekrima-arch-cachyos.tar.gz zekrima-arch-linux
+          tar --exclude='zekrima-arch-linux/target' -czf zekrima-arch-cachyos-src.tar.gz zekrima-arch-linux
       - uses: actions/upload-artifact@v4
         with:
           name: release-arch
-          path: zekrima-arch-cachyos.tar.gz
+          path: |
+            zekrima-*.pkg.tar.zst
+            zekrima-linux-x86_64.tar.gz
+            zekrima-arch-cachyos-src.tar.gz
 
   publish:
     name: Publish GitHub Release
     needs: [build-windows, build-arch-linux]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      - name: List release assets
+        run: ls -lh artifacts/
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            artifacts/zekrima.exe
+            artifacts/Zekrima-Setup-x64.exe
             artifacts/zekrima-windows-portable.zip
-            artifacts/zekrima-arch-cachyos.tar.gz
+            artifacts/zekrima.exe
+            artifacts/zekrima-*.pkg.tar.zst
+            artifacts/zekrima-linux-x86_64.tar.gz
+            artifacts/zekrima-arch-cachyos-src.tar.gz
