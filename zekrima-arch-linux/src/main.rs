@@ -230,7 +230,7 @@ impl AppState {
                 rect_tuple.3.max(1),
             );
             let region = cairo::Region::create_rectangle(&rect);
-            surface.set_input_region(&region);
+            surface.set_input_region(Some(&region));
             self.last_input_rect = Some(rect_tuple);
         }
     }
@@ -538,8 +538,8 @@ fn ensure_anim_timer(state_rc: &Rc<RefCell<AppState>>) {
 
             let _moving = st.springs.update(dt);
             if st.assistant.is_listening() {
-                st.zeki
-                    .set_live_voice_level(Some(st.assistant.live_voice_level()));
+                let level = st.assistant.live_voice_level();
+                st.zeki.set_live_voice_level(Some(level));
             }
             st.zeki.update(dt);
             st.update_input_region();
