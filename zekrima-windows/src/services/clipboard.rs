@@ -94,6 +94,27 @@ impl ClipboardHistory {
         }
     }
 
+    /// Writes arbitrary text (e.g. an AI reply) directly to the Windows clipboard.
+    pub unsafe fn copy_text(&mut self, text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        self.ignore_next_update = true;
+        if write_clipboard_text(self.hwnd, trimmed) {
+            self.copied_flash_until = Some(Instant::now() + Duration::from_millis(1400));
+            true
+        } else {
+            self.ignore_next_update = false;
+            false
+        }
+    }
+
+    /// Reads current plain text from the Windows clipboard (for Ctrl+V paste in chat).
+    pub unsafe fn current_text(&self) -> Option<String> {
+        read_clipboard_text(self.hwnd)
+    }
+
     pub fn clear(&mut self) {
         self.items.clear();
         self.copied_flash_until = None;

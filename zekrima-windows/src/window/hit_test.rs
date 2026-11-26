@@ -32,16 +32,42 @@ fn contains(rect: &RECT, x: i32, y: i32) -> bool {
     x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
 
-/// Handles `WM_NCHITTEST` for the pill.
-pub unsafe fn handle(hwnd: HWND, lparam: LPARAM, dpi: u32, springs: &PillSprings) -> LRESULT {
+/// Handles `WM_NCHITTEST` for the pill (or a thin top-edge reveal strip when auto-hidden).
+pub unsafe fn handle(
+    hwnd: HWND,
+    lparam: LPARAM,
+    dpi: u32,
+    springs: &PillSprings,
+    auto_hidden: bool,
+) -> LRESULT {
     let mut point = POINT {
         x: signed_loword(lparam.0),
         y: signed_hiword(lparam.0),
     };
 
-    if ScreenToClient(hwnd, &mut point).as_bool()
-        && contains(&pill_rect(dpi, springs), point.x, point.y)
-    {
+    if !ScreenToClient(hwnd, &mut point).as_bool() {
+        return LRESULT(HTTRANSPARENT as isize);
+    }
+
+    if auto_hidden {
+        // Thin 5px top-center reveal strip so moving cursor to top edge brings the island back
+        let strip_w = to_physical(220.0, dpi);
+        let left = to_physical((CANVAS_WIDTH_LOGICAL - 220.0) / 2.0, dpi).floor() as i32;
+        let right = (left as f32 + strip_w).ceil() as i32;
+        let bottom = to_physical(5.0, dpi).ceil().max(4.0) as i32;
+        let strip = RECT {
+            left,
+            top: 0,
+            right,
+            bottom,
+        };
+        if contains(&strip, point.x, point.y) {
+            return LRESULT(HTCLIENT as isize);
+        }
+        return LRESULT(HTTRANSPARENT as isize);
+    }
+
+    if contains(&pill_rect(dpi, springs), point.x, point.y) {
         LRESULT(HTCLIENT as isize)
     } else {
         LRESULT(HTTRANSPARENT as isize)

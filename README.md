@@ -1,19 +1,27 @@
-# Zekrima — Native Dynamic Island Overlay
+# Zekrima Personal Assistant — Native Dynamic Island Overlay
 
 ![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)
 ![Windows](https://img.shields.io/badge/Windows-11%20%2F%2010-0078D6?logo=windows11)
 ![Arch Linux](https://img.shields.io/badge/Arch%20Linux-CachyOS-1793D1?logo=archlinux)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
-**Zekrima** adalah aplikasi **Dynamic Island native** super ringan yang dibangun murni dengan **Rust** — tanpa WebView, Electron, atau Tauri. Dirancang untuk menemani alur kerja harian di **Windows 11/10** maupun **Arch Linux / CachyOS** dengan konsumsi `0.0%` idle CPU, animasi *damped harmonic spring*, serta integrasi sistem yang cepat dan tidak mengganggu fokus kerja.
-
-> Proyek ini **terus dikembangkan secara aktif** dengan fitur-fitur produktivitas baru untuk mempermudah pekerjaan sehari-hari.
+**Zekrima Personal Assistant** adalah aplikasi **Dynamic Island & AI Personal Assistant native** super ringan yang dibangun murni dengan **Rust** — tanpa WebView, Electron, atau Tauri. Dirancang untuk menemani alur kerja harian di **Windows 11/10** maupun **Arch Linux / CachyOS** dengan maskot interaktif **Zeki**, chat & voice AI multimodal (BYOK), screen vision zero-retention, konsumsi `0.0%` idle CPU, animasi *damped harmonic spring*, serta integrasi sistem yang cepat dan tidak mengganggu fokus kerja.
 
 ---
 
-## Fitur Saat Ini (`v0.2.0`)
+## Fitur Saat Ini (`v0.3.0`)
 
-- **Unified 5-Tab Productivity Bar**: pindah cepat antara **`Media`**, **`Timer`**, **`Clip`**, **`Sys`**, dan **`Notifs`** langsung di dalam pill expanded (`440 × 162`).
+- **Maskot Interaktif "Zeki" & Animasi Prosedural 7-State (Windows)**:
+  - Render vektor Direct2D (`Idle`, `Sleepy`, `Listening`, `Thinking`, `Speaking`, `Happy`, `Error`) dengan auto-sleep 15 menit, reaksi klik (*poke sparks*), dan goyang mengikuti musik.
+  - **Zeki Companion Dock** tampil di seluruh sub-menu (`Media`, `Timer`, `Clip`, `Sys`, `Notifs`) dengan akses cepat **Chat** & **Voice Listening** kapan saja.
+- **AI Chat, Voice & File Assistant (BYOK — Multi-Provider)**:
+  - **Mode Chat Native** langsung di Direct2D dengan riwayat multi-turn yang bisa di-scroll (wheel / drag / PgUp-PgDn) dan **klik ganda (double-click) untuk memperbesar chat box** (`520×310` ↔ `640×470`).
+  - **Voice Input & TTS**: WASAPI Push-to-Talk & Hands-Free VAD + suara TTS native (`Kore`, `Puck`, `Aoede`, `Charon`, `Fenrir`, `Zephyr`).
+  - **Dukungan Provider & Model Gratis**: **Google Gemini** (`gemini-3.8-flash` & `gemini-3.8-flash-tts`), **OpenRouter (Free)**, **OpenCode Zen (Free)**, **NVIDIA NIM (Free)**, **Groq**, dan **OpenAI / Custom** lewat aplikasi pengaturan native (`Config`).
+  - **Screen Vision (Zero Retention) & File Attachment**: tangkapan layar in-memory (`Standard 1024px` / `HD 1600px`) dengan tombol **Incognito**, indikator live `● SCREEN` / `● MIC`, lampiran file (teks/kode/gambar/PDF), serta kontrol sistem (volume, brightness, buka aplikasi) & tombol `Insert` eksplisit.
+- **Auto-Hide & Custom Global Hotkeys**:
+  - **Auto-Hide saat Idle** (pudar setelah 4 detik idle, muncul saat kursor menyentuh tepi atas tengah) dan shortcut global kustom untuk **Hide/Show** (`Alt+H`, `Ctrl+Shift+H`, `Alt+X`) serta **Push-to-Talk** (`Alt+Space`, `Ctrl+Space`, `Alt+Z`, `Ctrl+Shift+Space`).
+- **Unified 6-Tab Productivity Bar**: pindah cepat antara **`Zeki`**, **`Media`**, **`Timer`**, **`Clip`**, **`Sys`**, dan **`Notifs`** langsung di dalam pill expanded.
 - **Focus / Pomodoro Timer (`Timer`)**
   - Preset `5m`, `15m`, `25m`, `45m`, tombol `Start`/`Pause` & `Reset`, progress bar countdown, indikator hitung mundur aktif di collapsed pill, serta toast notifikasi otomatis saat waktu selesai.
 - **Quick Clipboard History (`Clip`)**

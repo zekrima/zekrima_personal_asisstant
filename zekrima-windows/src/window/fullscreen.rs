@@ -36,8 +36,12 @@ impl FullscreenMonitor {
         })
     }
 
+    pub fn is_hidden(&self) -> bool {
+        self.was_fullscreen
+    }
+
     /// Panggil dari `wndproc` saat menerima `WM_TIMER`.
-    pub unsafe fn check_and_react(&mut self) -> Result<()> {
+    pub unsafe fn check_and_react(&mut self, manual_hidden: bool) -> Result<()> {
         let state = SHQueryUserNotificationState()?;
         let is_fullscreen = state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_BUSY;
         let is_visible = state == QUNS_ACCEPTS_NOTIFICATIONS;
@@ -46,16 +50,18 @@ impl FullscreenMonitor {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
             self.was_fullscreen = true;
         } else if is_visible && self.was_fullscreen {
-            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetWindowPos(
-                self.hwnd,
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
+            if !manual_hidden {
+                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
             self.was_fullscreen = false;
         }
 

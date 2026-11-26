@@ -8,6 +8,8 @@ dist/
 zekrima-windows/bin/
 *.exe
 *.zip
+*.rar
+*.7z
 *.tar.gz
 *.pkg.tar.zst
 *.pkg.tar.xz

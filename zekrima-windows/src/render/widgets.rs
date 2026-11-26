@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::render::spring::{
     COLLAPSED_HEIGHT, EXPANDED_HEIGHT, EXPANDED_WIDTH, NOTIFICATION_HEIGHT, NOTIFICATION_WIDTH,
 };
+use crate::render::zeki::{ZekiState, ALL_ZEKI_STATES};
 use crate::services::media::MediaControl;
 use crate::services::notifications::NotificationSnapshot;
 use crate::services::pomodoro::TIMER_PRESETS_SECS;
@@ -48,9 +49,10 @@ impl RectF {
     }
 }
 
-/// Five productivity tabs in the expanded island header.
+/// Six tabs in the expanded island header (`Zeki` mascot + 5 productivity tools).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpandedTab {
+    Zeki,
     Media,
     Timer,
     Clipboard,
@@ -58,7 +60,8 @@ pub enum ExpandedTab {
     Notifications,
 }
 
-pub const ALL_TABS: [ExpandedTab; 5] = [
+pub const ALL_TABS: [ExpandedTab; 6] = [
+    ExpandedTab::Zeki,
     ExpandedTab::Media,
     ExpandedTab::Timer,
     ExpandedTab::Clipboard,
@@ -70,6 +73,21 @@ pub const ALL_TABS: [ExpandedTab; 5] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HitTarget {
     SelectTab(ExpandedTab),
+    ZekiPoke,
+    ZekiSelectState(ZekiState),
+    ZekiOpenChat,
+    ZekiMicToggle,
+    ZekiTogglePrivacy,
+    ZekiOpenConfig,
+    ZekiAttachFile,
+    ZekiRemoveFile,
+    ZekiInsertReply,
+    ZekiCopyReply,
+    ZekiClearChat,
+    ZekiChatCard,
+    ZekiChatToggleSize,
+    ZekiChatInput,
+    ZekiChatSend,
     MediaControl(MediaControl),
     ToastActivate(u32),
     ToastDismiss(u32),
@@ -85,37 +103,129 @@ pub enum HitTarget {
 }
 
 // -----------------------------------------------------------------------------
-// Top 5-tab bar (y = 11..33, width = 408 across 440px expanded pill)
+// Top 6-tab bar (y = 11..33, width = 408 across 440px expanded pill)
 // -----------------------------------------------------------------------------
 
-pub fn tab_rect(tab: ExpandedTab) -> RectF {
+pub fn tab_rect_for_width(tab: ExpandedTab, pill_w: f32) -> RectF {
     let idx = match tab {
-        ExpandedTab::Media => 0.0,
-        ExpandedTab::Timer => 1.0,
-        ExpandedTab::Clipboard => 2.0,
-        ExpandedTab::System => 3.0,
-        ExpandedTab::Notifications => 4.0,
+        ExpandedTab::Zeki => 0.0,
+        ExpandedTab::Media => 1.0,
+        ExpandedTab::Timer => 2.0,
+        ExpandedTab::Clipboard => 3.0,
+        ExpandedTab::System => 4.0,
+        ExpandedTab::Notifications => 5.0,
     };
     let pad = 16.0;
-    let gap = 6.0;
-    let tab_w = (EXPANDED_WIDTH - pad * 2.0 - gap * 4.0) / 5.0; // 76.8
+    let gap = 5.0;
+    let w = pill_w.max(EXPANDED_WIDTH);
+    let tab_w = (w - pad * 2.0 - gap * 5.0) / 6.0;
     let left = pad + idx * (tab_w + gap);
     RectF::new(left, 11.0, left + tab_w, 33.0)
 }
 
 // -----------------------------------------------------------------------------
-// Media tab layout (below top tab bar: y = 42..152)
+// Zeki Assistant tab layout (preview 440x198, Chat 520x310, Large Chat 640x470)
+// -----------------------------------------------------------------------------
+
+pub const ZEKI_STAGE_RECT: RectF = RectF::new(18.0, 46.0, 118.0, 146.0);
+
+// Buttons in default (preview) Zeki view (440 x 198)
+pub const ZEKI_CHAT_BTN_PREVIEW: RectF = RectF::new(214.0, 45.0, 280.0, 67.0);
+pub const ZEKI_MIC_BTN_PREVIEW: RectF = RectF::new(286.0, 45.0, 352.0, 67.0);
+pub const ZEKI_CFG_BTN_PREVIEW: RectF = RectF::new(358.0, 45.0, 422.0, 67.0);
+pub const ZEKI_PRIVACY_BTN_PREVIEW: RectF = RectF::new(18.0, 154.0, 118.0, 182.0);
+
+// Left-column buttons in Chat mode
+pub const ZEKI_MIC_BTN_CHAT: RectF = RectF::new(18.0, 154.0, 118.0, 186.0);
+pub const ZEKI_CFG_BTN_CHAT: RectF = RectF::new(18.0, 192.0, 118.0, 224.0);
+pub const ZEKI_PRIVACY_BTN_CHAT: RectF = RectF::new(18.0, 230.0, 118.0, 258.0);
+
+/// Responsive right-column layout for Chat mode (adapts smoothly to 520x310 & 640x470).
+#[derive(Clone, Copy, Debug)]
+pub struct ChatLayout {
+    pub expand_btn: RectF,
+    pub insert_btn: RectF,
+    pub copy_btn: RectF,
+    pub clear_btn: RectF,
+    pub card: RectF,
+    pub file_chip: RectF,
+    pub attach_btn: RectF,
+    pub input: RectF,
+    pub send_btn: RectF,
+}
+
+pub fn chat_layout(pill_w: f32, pill_h: f32, has_file: bool) -> ChatLayout {
+    let right = (pill_w - 18.0).max(360.0);
+    let clear_btn = RectF::new(right - 46.0, 45.0, right, 66.0);
+    let copy_btn = RectF::new(clear_btn.left - 50.0, 45.0, clear_btn.left - 4.0, 66.0);
+    let insert_btn = RectF::new(copy_btn.left - 54.0, 45.0, copy_btn.left - 4.0, 66.0);
+    let expand_btn = RectF::new(insert_btn.left - 56.0, 45.0, insert_btn.left - 4.0, 66.0);
+
+    let input_bottom = (pill_h - 12.0).max(188.0);
+    let input_top = input_bottom - 32.0;
+    let attach_btn = RectF::new(132.0, input_top, 182.0, input_bottom);
+    let send_btn = RectF::new(right - 56.0, input_top, right, input_bottom);
+    let input = RectF::new(attach_btn.right + 6.0, input_top, send_btn.left - 6.0, input_bottom);
+
+    let file_chip = RectF::new(132.0, input_top - 24.0, right, input_top - 4.0);
+    let card_bottom = if has_file {
+        (file_chip.top - 6.0).max(116.0)
+    } else {
+        (input_top - 8.0).max(124.0)
+    };
+    let card = RectF::new(132.0, 72.0, right, card_bottom);
+
+    ChatLayout {
+        expand_btn,
+        insert_btn,
+        copy_btn,
+        clear_btn,
+        card,
+        file_chip,
+        attach_btn,
+        input,
+        send_btn,
+    }
+}
+
+// Persistent Zeki Companion Dock shown at the bottom of all non-Zeki sub-menus
+pub const ZEKI_DOCK_RECT: RectF = RectF::new(16.0, 156.0, 424.0, 190.0);
+pub const ZEKI_DOCK_POKE_RECT: RectF = RectF::new(16.0, 156.0, 56.0, 190.0);
+pub const ZEKI_DOCK_PROMPT_RECT: RectF = RectF::new(56.0, 156.0, 214.0, 190.0);
+pub const ZEKI_DOCK_PRIVACY_BTN: RectF = RectF::new(218.0, 161.0, 274.0, 185.0);
+pub const ZEKI_DOCK_CHAT_BTN: RectF = RectF::new(280.0, 161.0, 348.0, 185.0);
+pub const ZEKI_DOCK_MIC_BTN: RectF = RectF::new(354.0, 161.0, 420.0, 185.0);
+
+pub fn zeki_state_btn_rect(index: usize) -> RectF {
+    let start_x = 132.0;
+    let total_w = EXPANDED_WIDTH - start_x - 18.0; // 290.0
+    let gap = 6.0;
+    if index < 4 {
+        let w = (total_w - gap * 3.0) / 4.0;
+        let left = start_x + index as f32 * (w + gap);
+        RectF::new(left, 102.0, left + w, 128.0)
+    } else {
+        let col = index - 4;
+        let w = (total_w - gap * 2.0) / 3.0;
+        let left = start_x + col as f32 * (w + gap);
+        RectF::new(left, 134.0, left + w, 160.0)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Media tab layout (logo on top-left directly above the clock, controls on right)
 // -----------------------------------------------------------------------------
 
 pub const COLLAPSED_ART: RectF = RectF::new(10.0, 7.0, 30.0, 27.0);
-pub const EXPANDED_ART: RectF = RectF::new(18.0, 48.0, 102.0, 132.0);
+pub const EXPANDED_ART: RectF = RectF::new(22.0, 44.0, 94.0, 116.0);
+pub const MEDIA_CLOCK_BOX: RectF = RectF::new(18.0, 120.0, 98.0, 146.0);
 
-pub const TITLE_BOX: RectF = RectF::new(116.0, 46.0, 422.0, 74.0);
-pub const ARTIST_BOX: RectF = RectF::new(116.0, 74.0, 422.0, 96.0);
+pub const TITLE_BOX: RectF = RectF::new(110.0, 46.0, 422.0, 74.0);
+pub const ARTIST_BOX: RectF = RectF::new(110.0, 74.0, 422.0, 96.0);
 
 pub const CONTROL_SIZE: f32 = 30.0;
 pub const CONTROL_GAP: f32 = 8.0;
-pub const CONTROLS_TOP: f32 = 104.0;
+pub const CONTROLS_TOP: f32 = 106.0;
 
 pub const EQUALIZER_BAR_COUNT: usize = 5;
 pub const EQUALIZER_BAR_WIDTH: f32 = 3.0;
@@ -232,6 +342,7 @@ pub fn smoothstep(t: f32) -> f32 {
 }
 
 pub struct HitContext<'a> {
+    pub pill_width: f32,
     pub pill_height: f32,
     pub expanded: bool,
     pub expanded_tab: ExpandedTab,
@@ -240,6 +351,10 @@ pub struct HitContext<'a> {
     pub toast_visible: bool,
     pub notifications: &'a NotificationSnapshot,
     pub clip_count: usize,
+    pub assistant_chat_open: bool,
+    pub assistant_has_reply: bool,
+    pub assistant_has_error: bool,
+    pub assistant_has_file: bool,
 }
 
 pub fn hit_target_at(x: f32, y: f32, ctx: &HitContext) -> Option<HitTarget> {
@@ -261,14 +376,97 @@ pub fn hit_target_at(x: f32, y: f32, ctx: &HitContext) -> Option<HitTarget> {
         return None;
     }
 
-    // Top 5-tab bar works from any expanded tab.
+    // Top 6-tab bar works from any expanded tab.
     for tab in ALL_TABS {
-        if tab_rect(tab).contains(x, y) {
+        if tab_rect_for_width(tab, ctx.pill_width).contains(x, y) {
             return Some(HitTarget::SelectTab(tab));
         }
     }
 
+    // Persistent Zeki Companion Dock works across all non-Zeki sub-menus
+    if ctx.expanded_tab != ExpandedTab::Zeki {
+        if ZEKI_DOCK_POKE_RECT.contains(x, y) {
+            return Some(HitTarget::ZekiPoke);
+        }
+        if ZEKI_DOCK_PRIVACY_BTN.contains(x, y) {
+            return Some(HitTarget::ZekiTogglePrivacy);
+        }
+        if ZEKI_DOCK_CHAT_BTN.contains(x, y) || ZEKI_DOCK_PROMPT_RECT.contains(x, y) {
+            return Some(HitTarget::ZekiOpenChat);
+        }
+        if ZEKI_DOCK_MIC_BTN.contains(x, y) {
+            return Some(HitTarget::ZekiMicToggle);
+        }
+    }
+
     match ctx.expanded_tab {
+        ExpandedTab::Zeki => {
+            if ZEKI_STAGE_RECT.contains(x, y) {
+                return Some(HitTarget::ZekiPoke);
+            }
+            if ctx.assistant_chat_open {
+                let cl = chat_layout(ctx.pill_width, ctx.pill_height, ctx.assistant_has_file);
+                if ZEKI_MIC_BTN_CHAT.contains(x, y) {
+                    return Some(HitTarget::ZekiMicToggle);
+                }
+                if ZEKI_CFG_BTN_CHAT.contains(x, y) {
+                    return Some(HitTarget::ZekiOpenConfig);
+                }
+                if ZEKI_PRIVACY_BTN_CHAT.contains(x, y) {
+                    return Some(HitTarget::ZekiTogglePrivacy);
+                }
+                if cl.attach_btn.contains(x, y) {
+                    return Some(HitTarget::ZekiAttachFile);
+                }
+                if ctx.assistant_has_file && cl.file_chip.contains(x, y) {
+                    return Some(HitTarget::ZekiRemoveFile);
+                }
+                if cl.input.contains(x, y) {
+                    return Some(HitTarget::ZekiChatInput);
+                }
+                if cl.send_btn.contains(x, y) {
+                    return Some(HitTarget::ZekiChatSend);
+                }
+                if cl.expand_btn.contains(x, y) {
+                    return Some(HitTarget::ZekiChatToggleSize);
+                }
+                if cl.insert_btn.contains(x, y) && ctx.assistant_has_reply {
+                    return Some(HitTarget::ZekiInsertReply);
+                }
+                if cl.clear_btn.contains(x, y) {
+                    return Some(HitTarget::ZekiClearChat);
+                }
+                if cl.copy_btn.contains(x, y) {
+                    if ctx.assistant_has_reply {
+                        return Some(HitTarget::ZekiCopyReply);
+                    } else if ctx.assistant_has_error {
+                        return Some(HitTarget::ZekiOpenConfig);
+                    }
+                }
+                if cl.card.contains(x, y) {
+                    return Some(HitTarget::ZekiChatCard);
+                }
+                return None;
+            }
+            if ZEKI_CHAT_BTN_PREVIEW.contains(x, y) {
+                return Some(HitTarget::ZekiOpenChat);
+            }
+            if ZEKI_MIC_BTN_PREVIEW.contains(x, y) {
+                return Some(HitTarget::ZekiMicToggle);
+            }
+            if ZEKI_CFG_BTN_PREVIEW.contains(x, y) {
+                return Some(HitTarget::ZekiOpenConfig);
+            }
+            if ZEKI_PRIVACY_BTN_PREVIEW.contains(x, y) {
+                return Some(HitTarget::ZekiTogglePrivacy);
+            }
+            for (i, &state) in ALL_ZEKI_STATES.iter().enumerate() {
+                if zeki_state_btn_rect(i).contains(x, y) {
+                    return Some(HitTarget::ZekiSelectState(state));
+                }
+            }
+            None
+        }
         ExpandedTab::Media => {
             if ctx.has_media {
                 if let Some(ctrl) = control_at(x, y) {

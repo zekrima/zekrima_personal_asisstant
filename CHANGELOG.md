@@ -2,6 +2,27 @@
 
 All notable changes to **Zekrima** will be documented in this file.
 
+## [0.3.0] - 2026-11-26
+
+### Added (Zekrima Personal Assistant — Windows Edition)
+- **Interactive Mascot "Zeki" & 7-State Procedural Animation Engine**:
+  - Pure Direct2D vector mascot (`Idle`, `Sleepy`, `Listening`, `Thinking`, `Speaking`, `Happy`, `Error`) with 15-minute auto-sleep, poke spark reactions, and audio-reactive music dance.
+  - Persistent **Zeki Companion Dock** across all expanded sub-menus (`Media`, `Timer`, `Clip`, `Sys`, `Notifs`) with quick access to **Chat** and **Voice Listening**.
+  - Media logo positioned top-left above the clock when media is playing.
+- **Voice, Chat & Multi-Provider AI Core (BYOK)**:
+  - Native **Mode Chat** directly inside Direct2D (`WM_CHAR`, `WM_KEYDOWN`, `Ctrl+V` paste, Enter send, Esc cancel), scrollable multi-turn conversation history (mouse wheel, drag, PgUp/PgDn, scrollbar), and **double-click expand** (`520×310` ↔ `640×470`).
+  - Native Win32 **Assistant Settings App** (`Config`) with per-provider API key retention, editable model preset combobox, Show/Hide key toggle, and live `Save & Apply` reload (`%APPDATA%\Zekrima\assistant.ini`).
+  - Built-in support for **Google Gemini** (`gemini-3.8-flash` for chat & audio input, `gemini-3.8-flash-tts` / `gemini-3.8-flash-lite-tts` for WAV TTS), **OpenRouter (Free)**, **OpenCode Zen (Free)**, **NVIDIA NIM (Free)**, **Groq**, and **OpenAI / Custom** endpoints.
+  - WASAPI `eCapture` 16 kHz mono WAV recorder with Push-to-Talk & Hands-Free energy VAD.
+- **Context Awareness, File Attachments & System Control**:
+  - Zero-Retention in-memory **Screen Vision** (GDI `BitBlt` + WIC JPEG, configurable Standard `1024px` or HD `1600px`) with **Incognito / Screen ON** privacy toggle and live `● SCREEN` / `● MIC` indicators.
+  - **File Attachments** (`Attach` button) for text/code, images, and PDFs.
+  - Universal `[[TOOL:...]]` protocol for Volume, Brightness, Open App, and Notification context summary, plus explicit user-triggered `Insert` button to paste AI responses into the previous window.
+- **Auto-Hide, Custom Hotkeys & Power Optimizations**:
+  - **Auto-Hide when Idle** (fades out after 4s idle with a 5px top-center reveal strip, `0.0%` CPU when hidden) and customizable **Hide/Show** (`Alt+H`, `Ctrl+Shift+H`, `Alt+X`) & **Push-to-Talk** (`Alt+Space`, `Ctrl+Space`, `Alt+Z`, `Ctrl+Shift+Space`) global hotkeys.
+  - Selectable **Gemini TTS Voices** (`Kore`, `Puck`, `Aoede`, `Charon`, `Fenrir`, `Zephyr`).
+  - Pre-cached Direct2D `ID2D1StrokeStyle` (eliminating per-frame COM allocations) and low-fps (~8 fps) battery-saver mode when collapsed & `Sleepy`.
+
 ## [0.2.0] - 2026-11-26
 
 ### Added (Windows & Arch Linux / CachyOS)

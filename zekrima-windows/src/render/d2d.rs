@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap, ID2D1Brush, ID2D1DCRenderTarget, ID2D1Factory,
-    ID2D1PathGeometry, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    ID2D1PathGeometry, ID2D1SolidColorBrush, ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
     D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_BITMAP_PROPERTIES, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -31,7 +31,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_REGULAR,
     DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
@@ -44,14 +45,20 @@ use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 use crate::layout::{CANVAS_HEIGHT_LOGICAL, CANVAS_WIDTH_LOGICAL, PILL_TOP_LOGICAL};
 use crate::render::widgets::{
-    app_accent_rgb, app_initial, clip_row_rect, control_rect, expansion_progress,
-    format_relative_time, notif_card_dismiss_rect, notif_card_rect, smoothstep, tab_rect,
-    timer_preset_rect, ExpandedTab, HitTarget, RectF, ALL_TABS, ARTIST_BOX, CLIP_CLEAR_BTN,
-    CLIP_MAX_VISIBLE, COLLAPSED_ART, CONTROLS_TOP, EQUALIZER_BAR_COUNT, EQUALIZER_BAR_GAP,
-    EQUALIZER_BAR_WIDTH, EQUALIZER_RIGHT, EXPANDED_ART, NOTIF_CARD_MAX_VISIBLE, NOTIF_CLEAR_BTN,
-    NOTIF_SETTINGS_BTN, TIMER_PROGRESS_BAR, TIMER_RESET_BTN, TIMER_TOGGLE_BTN, TITLE_BOX,
-    TOAST_AVATAR, TOAST_DISMISS_BTN, TOAST_PROGRESS_RECT,
+    app_accent_rgb, app_initial, chat_layout, clip_row_rect, control_rect, expansion_progress,
+    format_relative_time, notif_card_dismiss_rect, notif_card_rect, smoothstep, tab_rect_for_width,
+    timer_preset_rect, zeki_state_btn_rect, ExpandedTab, HitTarget, RectF, ALL_TABS, ARTIST_BOX,
+    CLIP_CLEAR_BTN, CLIP_MAX_VISIBLE, COLLAPSED_ART, CONTROLS_TOP, EQUALIZER_BAR_COUNT,
+    EQUALIZER_BAR_GAP, EQUALIZER_BAR_WIDTH, EQUALIZER_RIGHT, EXPANDED_ART, MEDIA_CLOCK_BOX,
+    NOTIF_CARD_MAX_VISIBLE, NOTIF_CLEAR_BTN, NOTIF_SETTINGS_BTN, TIMER_PROGRESS_BAR,
+    TIMER_RESET_BTN, TIMER_TOGGLE_BTN, TITLE_BOX, TOAST_AVATAR, TOAST_DISMISS_BTN,
+    TOAST_PROGRESS_RECT, ZEKI_CFG_BTN_CHAT, ZEKI_CFG_BTN_PREVIEW, ZEKI_CHAT_BTN_PREVIEW,
+    ZEKI_DOCK_CHAT_BTN, ZEKI_DOCK_MIC_BTN, ZEKI_DOCK_PRIVACY_BTN, ZEKI_DOCK_RECT,
+    ZEKI_MIC_BTN_CHAT, ZEKI_MIC_BTN_PREVIEW, ZEKI_PRIVACY_BTN_CHAT, ZEKI_PRIVACY_BTN_PREVIEW,
+    ZEKI_STAGE_RECT,
 };
+use crate::render::zeki::{create_round_stroke, ZekiEngine, ALL_ZEKI_STATES};
+use crate::services::assistant::{AssistantPhase, AssistantSnapshot};
 use crate::services::media::{AlbumArt, MediaControl, MediaInfo};
 use crate::services::notifications::{NotificationItem, NotificationSnapshot};
 use crate::services::pomodoro::{PomodoroTimer, TIMER_PRESETS_SECS};
@@ -127,11 +134,23 @@ const HOVER_RADIUS: f32 = 16.0;
 const PAUSED_EQUALIZER: [f32; EQUALIZER_BAR_COUNT] = [0.22, 0.45, 0.30, 0.50, 0.25];
 
 pub struct Frame<'a> {
+    pub hidden_visual: bool,
     pub width: f32,
     pub height: f32,
     pub radius: f32,
     pub expanded: bool,
     pub expanded_tab: ExpandedTab,
+    pub zeki: &'a ZekiEngine,
+    pub assistant: &'a AssistantSnapshot,
+    pub voice_level: f32,
+    pub chat_mode: bool,
+    pub chat_large: bool,
+    pub chat_input: &'a str,
+    pub chat_focused: bool,
+    pub chat_scroll_y: f32,
+    pub chat_auto_scroll: bool,
+    pub attached_file_label: Option<&'a str>,
+    pub ptt_hotkey_short: &'a str,
     pub media: &'a MediaInfo,
     pub hovered_target: Option<HitTarget>,
     pub eq_levels: [f32; EQUALIZER_BAR_COUNT],
@@ -144,6 +163,8 @@ pub struct Frame<'a> {
 }
 
 pub struct Renderer {
+    factory: ID2D1Factory,
+    round_stroke: Option<ID2D1StrokeStyle>,
     target: ID2D1DCRenderTarget,
     fill_brush: ID2D1SolidColorBrush,
     border_brush: ID2D1SolidColorBrush,
@@ -199,6 +220,7 @@ pub struct Renderer {
     width: u32,
     height: u32,
     dpi: f32,
+    last_chat_max_scroll: f32,
 }
 
 impl Renderer {
@@ -342,7 +364,7 @@ impl Renderer {
             18.5,
             w!("en-us"),
         )?;
-        clock_media_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
+        clock_media_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
         clock_media_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
 
         let clock_hero_format = dwrite.CreateTextFormat(
@@ -444,8 +466,11 @@ impl Renderer {
         let previous_icon = build_control_icon(&factory, MediaControl::Previous)?;
         let next_icon = build_control_icon(&factory, MediaControl::Next)?;
         let play_icon = build_control_icon(&factory, MediaControl::PlayPause)?;
+        let round_stroke = create_round_stroke(&factory);
 
         let mut renderer = Self {
+            factory,
+            round_stroke,
             target,
             fill_brush,
             border_brush,
@@ -497,9 +522,14 @@ impl Renderer {
             width: 0,
             height: 0,
             dpi: 0.0,
+            last_chat_max_scroll: 0.0,
         };
         renderer.resize(width, height, dpi)?;
         Ok(renderer)
+    }
+
+    pub fn chat_max_scroll(&self) -> f32 {
+        self.last_chat_max_scroll
     }
 
     pub unsafe fn resize(&mut self, width: u32, height: u32, dpi: f32) -> Result<()> {
@@ -537,6 +567,11 @@ impl Renderer {
             a: 0.0,
         };
         self.target.Clear(Some(&transparent));
+
+        if frame.hidden_visual {
+            self.target.EndDraw(None, None)?;
+            return self.present(hwnd);
+        }
 
         let width = frame.width.clamp(1.0, CANVAS_WIDTH_LOGICAL);
         let height = frame.height.clamp(1.0, CANVAS_HEIGHT_LOGICAL);
@@ -583,10 +618,20 @@ impl Renderer {
                         .FillRoundedRectangle(&accent_rect, &self.dynamic_brush);
                 }
             } else {
-                self.accent_brush.SetOpacity(0.42);
+                let (zr, zg, zb) = frame.zeki.accent_color();
+                let accent_alpha = if frame.zeki.state().is_assistant_active() {
+                    0.85
+                } else {
+                    0.55
+                };
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: zr,
+                    g: zg,
+                    b: zb,
+                    a: accent_alpha,
+                });
                 self.target
-                    .FillRoundedRectangle(&accent_rect, &self.accent_brush);
-                self.accent_brush.SetOpacity(1.0);
+                    .FillRoundedRectangle(&accent_rect, &self.dynamic_brush);
             }
         }
 
@@ -612,8 +657,11 @@ impl Renderer {
         } else if frame.expanded || expanded_progress >= 0.28 {
             let alpha = smoothstep(((expanded_progress - 0.15) / 0.85).clamp(0.0, 1.0));
             if alpha > 0.01 {
-                self.draw_tab_bar(left, top, frame, alpha);
+                self.draw_tab_bar(left, top, width, frame, alpha);
                 match frame.expanded_tab {
+                    ExpandedTab::Zeki => {
+                        self.draw_zeki_panel(left, top, width, height, frame, alpha);
+                    }
                     ExpandedTab::Media => {
                         if frame.media.has_session {
                             self.draw_expanded_media(left, top, frame, alpha);
@@ -649,10 +697,15 @@ impl Renderer {
                         );
                     }
                 }
+                if frame.expanded_tab != ExpandedTab::Zeki {
+                    self.draw_zeki_dock(left, top, frame, alpha);
+                }
             }
         } else {
             let collapsed_alpha = (1.0 - expanded_progress * 3.5).clamp(0.0, 1.0);
-            if frame.media.has_session {
+            if frame.zeki.state().is_assistant_active() {
+                self.draw_collapsed_assistant(left, top, width, height, frame, collapsed_alpha);
+            } else if frame.media.has_session {
                 self.draw_collapsed_media(left, top, width, height, frame, collapsed_alpha);
             } else {
                 self.draw_collapsed_idle(left, top, width, height, frame, collapsed_alpha);
@@ -668,11 +721,18 @@ impl Renderer {
         self.present(hwnd)
     }
 
-    /// Top 5-tab pill switcher shared by all expanded views.
-    unsafe fn draw_tab_bar(&self, origin_x: f32, origin_y: f32, frame: &Frame, alpha: f32) {
+    /// Top 6-tab pill switcher shared by all expanded views (scales with pill width).
+    unsafe fn draw_tab_bar(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        pill_width: f32,
+        frame: &Frame,
+        alpha: f32,
+    ) {
         let unread = frame.notification.unread_count();
         for tab in ALL_TABS {
-            let rect = tab_rect(tab);
+            let rect = tab_rect_for_width(tab, pill_width);
             let active = frame.expanded_tab == tab;
             let hovered = frame.hovered_target == Some(HitTarget::SelectTab(tab));
 
@@ -688,12 +748,31 @@ impl Renderer {
             };
 
             if active {
-                self.accent_brush.SetOpacity(0.28 * alpha);
-                self.target.FillRoundedRectangle(&pill, &self.accent_brush);
-                self.accent_brush.SetOpacity(0.65 * alpha);
-                self.target
-                    .DrawRoundedRectangle(&pill, &self.accent_brush, 1.0, None);
-                self.accent_brush.SetOpacity(1.0);
+                if tab == ExpandedTab::Zeki {
+                    let (zr, zg, zb) = frame.zeki.accent_color();
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: zr,
+                        g: zg,
+                        b: zb,
+                        a: 0.24 * alpha,
+                    });
+                    self.target.FillRoundedRectangle(&pill, &self.dynamic_brush);
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: zr,
+                        g: zg,
+                        b: zb,
+                        a: 0.72 * alpha,
+                    });
+                    self.target
+                        .DrawRoundedRectangle(&pill, &self.dynamic_brush, 1.0, None);
+                } else {
+                    self.accent_brush.SetOpacity(0.28 * alpha);
+                    self.target.FillRoundedRectangle(&pill, &self.accent_brush);
+                    self.accent_brush.SetOpacity(0.65 * alpha);
+                    self.target
+                        .DrawRoundedRectangle(&pill, &self.accent_brush, 1.0, None);
+                    self.accent_brush.SetOpacity(1.0);
+                }
             } else {
                 self.hover_brush
                     .SetOpacity(if hovered { 0.14 } else { 0.055 } * alpha);
@@ -701,6 +780,7 @@ impl Renderer {
             }
 
             let label = match tab {
+                ExpandedTab::Zeki => "Zeki".to_string(),
                 ExpandedTab::Media => "Media".to_string(),
                 ExpandedTab::Timer => {
                     if frame.timer.running {
@@ -713,9 +793,9 @@ impl Renderer {
                 ExpandedTab::System => "Sys".to_string(),
                 ExpandedTab::Notifications => {
                     if unread > 9 {
-                        "Notifs 9+".to_string()
+                        "Notif 9+".to_string()
                     } else if unread > 0 {
-                        format!("Notifs {unread}")
+                        format!("Notif {unread}")
                     } else {
                         "Notifs".to_string()
                     }
@@ -852,6 +932,114 @@ impl Renderer {
         }
     }
 
+    unsafe fn draw_collapsed_assistant(
+        &self,
+        pill_left: f32,
+        pill_top: f32,
+        pill_width: f32,
+        pill_height: f32,
+        frame: &Frame,
+        alpha: f32,
+    ) {
+        // Mini Zeki living on the left edge of the active assistant capsule
+        frame.zeki.draw(
+            &self.factory,
+            &self.target,
+            &self.dynamic_brush,
+            self.round_stroke.as_ref(),
+            &self.dwrite,
+            &self.badge_format,
+            pill_left + 23.0,
+            pill_top + pill_height / 2.0 + 1.0,
+            11.5,
+            alpha,
+            true,
+        );
+
+        let (zr, zg, zb) = frame.zeki.accent_color();
+        let state_label = match frame.assistant.phase {
+            AssistantPhase::Listening => "Listening...",
+            AssistantPhase::Transcribing => "Transcribing...",
+            AssistantPhase::Thinking if frame.assistant.screen_capturing_now => "Seeing screen...",
+            AssistantPhase::Thinking => "Thinking...",
+            AssistantPhase::Speaking => "Speaking...",
+            _ => frame.zeki.state().collapsed_tag(),
+        };
+        let lbl_u16: Vec<u16> = state_label.encode_utf16().collect();
+        if let Ok(layout) =
+            self.dwrite
+                .CreateTextLayout(&lbl_u16, &self.notif_title_format, 108.0, 20.0)
+        {
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: (zr * 0.45 + 0.55).min(1.0),
+                g: (zg * 0.45 + 0.55).min(1.0),
+                b: (zb * 0.45 + 0.55).min(1.0),
+                a: 0.98 * alpha,
+            });
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: pill_left + 44.0,
+                    y: pill_top + (pill_height - 17.0) / 2.0,
+                },
+                &layout,
+                &self.dynamic_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // While actively recording mic, draw live 5-bar voice waveform on the right!
+        if frame.assistant.phase == AssistantPhase::Listening {
+            let level = frame.voice_level.clamp(0.05, 1.0);
+            let bar_w = 3.0f32;
+            let gap = 3.0f32;
+            let right_edge = pill_left + pill_width - 18.0;
+            let cy = pill_top + pill_height / 2.0;
+            let weights = [0.55f32, 0.85, 1.0, 0.80, 0.50];
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: zr,
+                g: zg,
+                b: zb,
+                a: 0.95 * alpha,
+            });
+            for (i, &w_mul) in weights.iter().enumerate() {
+                let bh = (4.0 + 15.0 * level * w_mul).clamp(4.0, 19.0);
+                let bx = right_edge - (4 - i) as f32 * (bar_w + gap) - bar_w;
+                let bar = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: bx,
+                        top: cy - bh / 2.0,
+                        right: bx + bar_w,
+                        bottom: cy + bh / 2.0,
+                    },
+                    radiusX: bar_w / 2.0,
+                    radiusY: bar_w / 2.0,
+                };
+                self.target.FillRoundedRectangle(&bar, &self.dynamic_brush);
+            }
+        } else {
+            // Bold clock on the right so time remains readable even while Zeki is active
+            let clock = current_clock_string();
+            let clock_u16: Vec<u16> = clock.encode_utf16().collect();
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &clock_u16,
+                &self.clock_collapsed_format,
+                66.0,
+                pill_height,
+            ) {
+                self.title_brush.SetOpacity(0.95 * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: pill_left + pill_width - 74.0,
+                        y: pill_top,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+    }
+
     unsafe fn draw_collapsed_idle(
         &self,
         pill_left: f32,
@@ -861,24 +1049,27 @@ impl Renderer {
         frame: &Frame,
         alpha: f32,
     ) {
-        let dot = D2D1_ELLIPSE {
-            point: D2D_POINT_2F {
-                x: pill_left + 18.0,
-                y: pill_top + pill_height / 2.0,
-            },
-            radiusX: 4.0,
-            radiusY: 4.0,
-        };
-        self.accent_brush.SetOpacity(0.95 * alpha);
-        self.target.FillEllipse(&dot, &self.accent_brush);
-        self.accent_brush.SetOpacity(1.0);
+        // Living Mini Zeki mascot on the left of the collapsed pill
+        frame.zeki.draw(
+            &self.factory,
+            &self.target,
+            &self.dynamic_brush,
+            self.round_stroke.as_ref(),
+            &self.dwrite,
+            &self.badge_format,
+            pill_left + 19.5,
+            pill_top + pill_height / 2.0 + 0.5,
+            9.8,
+            alpha,
+            true,
+        );
 
         let clock = current_clock_string();
         let clock_u16: Vec<u16> = clock.encode_utf16().collect();
         let unread = frame.notification.unread_count();
 
         if frame.timer.running {
-            // [●] 24:59   10:22  (or [●] 24:59   [Avatar][Badge])
+            // [Zeki] 24:59   10:22  (or [Zeki] 24:59   [Avatar][Badge])
             let t_str = frame.timer.formatted();
             let t_u16: Vec<u16> = t_str.encode_utf16().collect();
             if let Ok(layout) = self.dwrite.CreateTextLayout(
@@ -889,7 +1080,7 @@ impl Renderer {
             ) {
                 self.accent_brush.SetOpacity(alpha);
                 self.target.DrawTextLayout(
-                    D2D_POINT_2F { x: pill_left + 28.0, y: pill_top },
+                    D2D_POINT_2F { x: pill_left + 34.0, y: pill_top },
                     &layout,
                     &self.accent_brush,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -929,7 +1120,7 @@ impl Renderer {
             ) {
                 self.title_brush.SetOpacity(0.98 * alpha);
                 self.target.DrawTextLayout(
-                    D2D_POINT_2F { x: pill_left + 30.0, y: pill_top },
+                    D2D_POINT_2F { x: pill_left + 35.0, y: pill_top },
                     &layout,
                     &self.title_brush,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -941,15 +1132,16 @@ impl Renderer {
                 );
             }
         } else {
-            let label: Vec<u16> = "Zekrima".encode_utf16().collect();
+            let tag = frame.zeki.state().collapsed_tag();
+            let label: Vec<u16> = tag.encode_utf16().collect();
             if let Ok(layout) =
                 self.dwrite
-                    .CreateTextLayout(&label, &self.hud_format, 72.0, pill_height)
+                    .CreateTextLayout(&label, &self.hud_format, 68.0, pill_height)
             {
-                self.hud_text_brush.SetOpacity(0.82 * alpha);
+                self.hud_text_brush.SetOpacity(0.84 * alpha);
                 self.target.DrawTextLayout(
                     D2D_POINT_2F {
-                        x: pill_left + 29.0,
+                        x: pill_left + 36.0,
                         y: pill_top + (pill_height - 15.0) / 2.0,
                     },
                     &layout,
@@ -975,43 +1167,1397 @@ impl Renderer {
         }
     }
 
-    unsafe fn draw_expanded_media(&self, origin_x: f32, origin_y: f32, frame: &Frame, alpha: f32) {
-        self.draw_art(origin_x, origin_y, &EXPANDED_ART, EXPANDED_ART_RADIUS);
-        self.draw_text(origin_x, origin_y, alpha);
+    /// Expanded "Zeki" tab: interactive hero mascot + scrollable multi-turn Chat OR 7-state preview.
+    unsafe fn draw_zeki_panel(
+        &mut self,
+        origin_x: f32,
+        origin_y: f32,
+        pill_width: f32,
+        pill_height: f32,
+        frame: &Frame,
+        alpha: f32,
+    ) {
+        let zeki = frame.zeki;
+        let assistant = frame.assistant;
+        let hovered = frame.hovered_target;
+        let (ar, ag, ab) = zeki.accent_color();
+        let stage_hovered = hovered == Some(HitTarget::ZekiPoke);
 
-        let hovered_ctrl = match frame.hovered_target {
-            Some(HitTarget::MediaControl(c)) => Some(c),
-            _ => None,
+        // Left interactive hero stage
+        let stage = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + ZEKI_STAGE_RECT.left,
+                top: origin_y + ZEKI_STAGE_RECT.top,
+                right: origin_x + ZEKI_STAGE_RECT.right,
+                bottom: origin_y + ZEKI_STAGE_RECT.bottom,
+            },
+            radiusX: 18.0,
+            radiusY: 18.0,
         };
-        self.draw_controls(origin_x, origin_y, alpha, frame.media.is_playing, hovered_ctrl);
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: ar,
+            g: ag,
+            b: ab,
+            a: if stage_hovered { 0.14 } else { 0.08 } * alpha,
+        });
+        self.target.FillRoundedRectangle(&stage, &self.dynamic_brush);
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: ar,
+            g: ag,
+            b: ab,
+            a: if stage_hovered { 0.58 } else { 0.28 } * alpha,
+        });
+        self.target
+            .DrawRoundedRectangle(&stage, &self.dynamic_brush, 1.0, None);
 
-        // Live 5-bar FFT equalizer
-        self.draw_equalizer(
-            origin_x,
-            origin_y,
-            CONTROLS_TOP + 15.0,
-            &frame.eq_levels,
-            frame.media.is_playing,
+        let (scx, scy) = ZEKI_STAGE_RECT.center();
+        zeki.draw(
+            &self.factory,
+            &self.target,
+            &self.dynamic_brush,
+            self.round_stroke.as_ref(),
+            &self.dwrite,
+            &self.badge_format,
+            origin_x + scx,
+            origin_y + scy + 3.0,
+            27.0,
             alpha,
-            344.0,
-            4.0,
-            3.5,
-            4.0,
-            20.0,
+            false,
         );
 
-        // Bold clock at bottom-right
-        let clock = current_clock_string();
-        let clock_u16: Vec<u16> = clock.encode_utf16().collect();
+        // Clear live Privacy Indicator badge inside top-left of Zeki's stage when Mic or Screen Vision is active
+        if assistant.phase == AssistantPhase::Listening || assistant.screen_capturing_now {
+            let (ir, ig, ib, ind_text) = if assistant.phase == AssistantPhase::Listening {
+                (0.96, 0.30, 0.38, "● MIC")
+            } else {
+                (0.14, 0.84, 0.94, "● SCREEN")
+            };
+            let badge_w = if assistant.phase == AssistantPhase::Listening { 44.0 } else { 58.0 };
+            let ind_pill = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + ZEKI_STAGE_RECT.left + 6.0,
+                    top: origin_y + ZEKI_STAGE_RECT.top + 6.0,
+                    right: origin_x + ZEKI_STAGE_RECT.left + 6.0 + badge_w,
+                    bottom: origin_y + ZEKI_STAGE_RECT.top + 20.0,
+                },
+                radiusX: 7.0,
+                radiusY: 7.0,
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: ir,
+                g: ig,
+                b: ib,
+                a: 0.28 * alpha,
+            });
+            self.target
+                .FillRoundedRectangle(&ind_pill, &self.dynamic_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: ir,
+                g: ig,
+                b: ib,
+                a: 0.90 * alpha,
+            });
+            self.target
+                .DrawRoundedRectangle(&ind_pill, &self.dynamic_brush, 0.9, None);
+            let ind_u16: Vec<u16> = ind_text.encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&ind_u16, &self.badge_format, badge_w, 14.0)
+            {
+                self.title_brush.SetOpacity(0.98 * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + ZEKI_STAGE_RECT.left + 6.0,
+                        y: origin_y + ZEKI_STAGE_RECT.top + 6.0,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+
+        // Subtle "Poke!" prompt when hovering Zeki's stage
+        if stage_hovered {
+            let hint: Vec<u16> = "Poke!".encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&hint, &self.badge_format, ZEKI_STAGE_RECT.width(), 14.0)
+            {
+                self.title_brush.SetOpacity(0.70 * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + ZEKI_STAGE_RECT.left,
+                        y: origin_y + ZEKI_STAGE_RECT.bottom - 16.0,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+
+        // Branch 1: Active Chat / Voice conversation view (520x310 normal, 640x470 large on 2x click)
+        if frame.chat_mode || assistant.has_conversation_view() {
+            let has_file = frame.attached_file_label.is_some();
+            let cl = chat_layout(pill_width, pill_height, has_file);
+
+            // Mic / Stop pill button beneath Zeki's stage
+            let is_listening = assistant.phase == AssistantPhase::Listening;
+            let mic_hov = hovered == Some(HitTarget::ZekiMicToggle);
+            let mic_rect = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + ZEKI_MIC_BTN_CHAT.left,
+                    top: origin_y + ZEKI_MIC_BTN_CHAT.top,
+                    right: origin_x + ZEKI_MIC_BTN_CHAT.right,
+                    bottom: origin_y + ZEKI_MIC_BTN_CHAT.bottom,
+                },
+                radiusX: 11.0,
+                radiusY: 11.0,
+            };
+            let (mr, mg, mb) = if is_listening {
+                (0.94, 0.27, 0.35)
+            } else {
+                (ar, ag, ab)
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: mr,
+                g: mg,
+                b: mb,
+                a: if is_listening {
+                    0.34
+                } else if mic_hov {
+                    0.26
+                } else {
+                    0.15
+                } * alpha,
+            });
+            self.target
+                .FillRoundedRectangle(&mic_rect, &self.dynamic_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: mr,
+                g: mg,
+                b: mb,
+                a: if is_listening || mic_hov { 0.85 } else { 0.45 } * alpha,
+            });
+            self.target
+                .DrawRoundedRectangle(&mic_rect, &self.dynamic_brush, 1.0, None);
+
+            let mic_label = if is_listening {
+                "Stop Mic".to_string()
+            } else if assistant.phase.is_busy() {
+                "Cancel".to_string()
+            } else {
+                format!("Mic ({})", frame.ptt_hotkey_short)
+            };
+            let mic_u16: Vec<u16> = mic_label.encode_utf16().collect();
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &mic_u16,
+                &self.pill_btn_format,
+                ZEKI_MIC_BTN_CHAT.width(),
+                ZEKI_MIC_BTN_CHAT.height(),
+            ) {
+                self.title_brush.SetOpacity(0.98 * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + ZEKI_MIC_BTN_CHAT.left,
+                        y: origin_y + ZEKI_MIC_BTN_CHAT.top,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+
+            // Quick Config button beneath Mic button
+            let cfg_hov = hovered == Some(HitTarget::ZekiOpenConfig);
+            let cfg_rect = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + ZEKI_CFG_BTN_CHAT.left,
+                    top: origin_y + ZEKI_CFG_BTN_CHAT.top,
+                    right: origin_x + ZEKI_CFG_BTN_CHAT.right,
+                    bottom: origin_y + ZEKI_CFG_BTN_CHAT.bottom,
+                },
+                radiusX: 11.0,
+                radiusY: 11.0,
+            };
+            self.hover_brush
+                .SetOpacity(if cfg_hov { 0.16 } else { 0.065 } * alpha);
+            self.target.FillRoundedRectangle(&cfg_rect, &self.hover_brush);
+            let cfg_u16: Vec<u16> = "Config".encode_utf16().collect();
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &cfg_u16,
+                &self.pill_btn_format,
+                ZEKI_CFG_BTN_CHAT.width(),
+                ZEKI_CFG_BTN_CHAT.height(),
+            ) {
+                self.title_brush
+                    .SetOpacity(if cfg_hov { 0.98 } else { 0.78 } * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + ZEKI_CFG_BTN_CHAT.left,
+                        y: origin_y + ZEKI_CFG_BTN_CHAT.top,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+
+            // Privacy Toggle button (Screen Vision ON <-> Incognito Mode)
+            self.draw_privacy_pill(
+                origin_x,
+                origin_y,
+                &ZEKI_PRIVACY_BTN_CHAT,
+                assistant.screen_access_enabled,
+                hovered == Some(HitTarget::ZekiTogglePrivacy),
+                alpha,
+            );
+
+            // Subtle scroll & double-click tip below Privacy button
+            if pill_height >= 300.0 {
+                let tip = if frame.chat_large {
+                    "Scroll / drag chat\n2x click to shrink"
+                } else {
+                    "Scroll / drag chat\n2x click to expand"
+                };
+                let tip_u16: Vec<u16> = tip.encode_utf16().collect();
+                if let Ok(layout) =
+                    self.dwrite
+                        .CreateTextLayout(&tip_u16, &self.center_sub_format, 100.0, 36.0)
+                {
+                    self.notif_body_brush.SetOpacity(0.50 * alpha);
+                    self.target.DrawTextLayout(
+                        D2D_POINT_2F {
+                            x: origin_x + 18.0,
+                            y: origin_y + 266.0,
+                        },
+                        &layout,
+                        &self.notif_body_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+            }
+
+            // Right header: phase title
+            let header_text = match assistant.phase {
+                AssistantPhase::Listening => "Listening...".to_string(),
+                AssistantPhase::Transcribing => "Transcribing...".to_string(),
+                AssistantPhase::Thinking => format!("Thinking • {}", assistant.provider_label),
+                AssistantPhase::Speaking => format!("Zeki • {}", assistant.provider_label),
+                AssistantPhase::Done => format!("Zeki • {}", assistant.provider_label),
+                AssistantPhase::Error => "Assistant Notice".to_string(),
+                AssistantPhase::Idle => format!("Zeki • {}", assistant.provider_label),
+            };
+            let head_w = (cl.expand_btn.left - 138.0).max(90.0);
+            let head_u16: Vec<u16> = header_text.encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&head_u16, &self.notif_title_format, head_w, 22.0)
+            {
+                self.title_brush.SetOpacity(0.98 * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + 132.0,
+                        y: origin_y + 47.0,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+
+            // Action button 0: Expand / Shrink toggle (same as double-clicking the chat box)
+            let exp_hov = hovered == Some(HitTarget::ZekiChatToggleSize);
+            let exp_btn = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + cl.expand_btn.left,
+                    top: origin_y + cl.expand_btn.top,
+                    right: origin_x + cl.expand_btn.right,
+                    bottom: origin_y + cl.expand_btn.bottom,
+                },
+                radiusX: 10.5,
+                radiusY: 10.5,
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: if frame.chat_large {
+                    0.26
+                } else if exp_hov {
+                    0.22
+                } else {
+                    0.10
+                } * alpha,
+            });
+            self.target
+                .FillRoundedRectangle(&exp_btn, &self.dynamic_brush);
+            let exp_lbl = if frame.chat_large { "Shrink" } else { "Expand" };
+            let exp_u16: Vec<u16> = exp_lbl.encode_utf16().collect();
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &exp_u16,
+                &self.pill_btn_format,
+                cl.expand_btn.width(),
+                cl.expand_btn.height(),
+            ) {
+                self.title_brush
+                    .SetOpacity(if exp_hov || frame.chat_large { 1.0 } else { 0.85 } * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + cl.expand_btn.left,
+                        y: origin_y + cl.expand_btn.top,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+
+            // Action button 0b: Explicit Insert (pastes Zeki's reply into user's active app cursor)
+            if !assistant.reply.is_empty() {
+                let ins_hov = hovered == Some(HitTarget::ZekiInsertReply);
+                let ins_btn = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: origin_x + cl.insert_btn.left,
+                        top: origin_y + cl.insert_btn.top,
+                        right: origin_x + cl.insert_btn.right,
+                        bottom: origin_y + cl.insert_btn.bottom,
+                    },
+                    radiusX: 10.5,
+                    radiusY: 10.5,
+                };
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.14,
+                    g: 0.83,
+                    b: 0.62,
+                    a: if ins_hov { 0.36 } else { 0.20 } * alpha,
+                });
+                self.target
+                    .FillRoundedRectangle(&ins_btn, &self.dynamic_brush);
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.14,
+                    g: 0.83,
+                    b: 0.62,
+                    a: if ins_hov { 0.92 } else { 0.52 } * alpha,
+                });
+                self.target
+                    .DrawRoundedRectangle(&ins_btn, &self.dynamic_brush, 1.0, None);
+                let ins_u16: Vec<u16> = "Insert".encode_utf16().collect();
+                if let Ok(layout) = self.dwrite.CreateTextLayout(
+                    &ins_u16,
+                    &self.pill_btn_format,
+                    cl.insert_btn.width(),
+                    cl.insert_btn.height(),
+                ) {
+                    self.title_brush.SetOpacity(0.98 * alpha);
+                    self.target.DrawTextLayout(
+                        D2D_POINT_2F {
+                            x: origin_x + cl.insert_btn.left,
+                            y: origin_y + cl.insert_btn.top,
+                        },
+                        &layout,
+                        &self.title_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+            }
+
+            // Action button 1: Copy (when reply exists) OR Config (when error exists)
+            let show_copy = !assistant.reply.is_empty();
+            let show_cfg = !show_copy && assistant.error.is_some();
+            if show_copy || show_cfg {
+                let target_id = if show_copy {
+                    HitTarget::ZekiCopyReply
+                } else {
+                    HitTarget::ZekiOpenConfig
+                };
+                let hov = hovered == Some(target_id);
+                let btn = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: origin_x + cl.copy_btn.left,
+                        top: origin_y + cl.copy_btn.top,
+                        right: origin_x + cl.copy_btn.right,
+                        bottom: origin_y + cl.copy_btn.bottom,
+                    },
+                    radiusX: 10.5,
+                    radiusY: 10.5,
+                };
+                self.hover_brush
+                    .SetOpacity(if hov { 0.18 } else { 0.08 } * alpha);
+                self.target.FillRoundedRectangle(&btn, &self.hover_brush);
+                let txt = if show_copy {
+                    if frame.clip_copied_flash { "Copied!" } else { "Copy" }
+                } else {
+                    "Config"
+                };
+                let u16_t: Vec<u16> = txt.encode_utf16().collect();
+                if let Ok(layout) = self.dwrite.CreateTextLayout(
+                    &u16_t,
+                    &self.pill_btn_format,
+                    cl.copy_btn.width(),
+                    cl.copy_btn.height(),
+                ) {
+                    self.title_brush.SetOpacity(if hov { 1.0 } else { 0.85 } * alpha);
+                    self.target.DrawTextLayout(
+                        D2D_POINT_2F {
+                            x: origin_x + cl.copy_btn.left,
+                            y: origin_y + cl.copy_btn.top,
+                        },
+                        &layout,
+                        &self.title_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+            }
+
+            // Action button 2: Clear / Back
+            let clear_hov = hovered == Some(HitTarget::ZekiClearChat);
+            let clear_btn = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + cl.clear_btn.left,
+                    top: origin_y + cl.clear_btn.top,
+                    right: origin_x + cl.clear_btn.right,
+                    bottom: origin_y + cl.clear_btn.bottom,
+                },
+                radiusX: 10.5,
+                radiusY: 10.5,
+            };
+            self.hover_brush
+                .SetOpacity(if clear_hov { 0.18 } else { 0.08 } * alpha);
+            self.target
+                .FillRoundedRectangle(&clear_btn, &self.hover_brush);
+            let clr_u16: Vec<u16> = "Clear".encode_utf16().collect();
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &clr_u16,
+                &self.pill_btn_format,
+                cl.clear_btn.width(),
+                cl.clear_btn.height(),
+            ) {
+                self.title_brush
+                    .SetOpacity(if clear_hov { 1.0 } else { 0.82 } * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + cl.clear_btn.left,
+                        y: origin_y + cl.clear_btn.top,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+
+            // Scrollable Chat Card surface (double-click to enlarge, wheel or drag to scroll!)
+            let card_hov = hovered == Some(HitTarget::ZekiChatCard);
+            let card = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + cl.card.left,
+                    top: origin_y + cl.card.top,
+                    right: origin_x + cl.card.right,
+                    bottom: origin_y + cl.card.bottom,
+                },
+                radiusX: 14.0,
+                radiusY: 14.0,
+            };
+            self.hover_brush
+                .SetOpacity(if card_hov { 0.07 } else { 0.055 } * alpha);
+            self.target.FillRoundedRectangle(&card, &self.hover_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: if card_hov { 0.36 } else { 0.22 } * alpha,
+            });
+            self.target
+                .DrawRoundedRectangle(&card, &self.dynamic_brush, 1.0, None);
+
+            // Build complete multi-turn conversation text so the user can scroll through everything
+            let (full_chat_text, is_err, is_placeholder_body) = build_chat_transcript(assistant);
+
+            let pad_l = 11.0f32;
+            let pad_r = 14.0f32;
+            let pad_v = 9.0f32;
+            let text_w = (cl.card.width() - pad_l - pad_r).max(60.0);
+            let view_h = (cl.card.height() - pad_v * 2.0).max(24.0);
+
+            let chat_u16: Vec<u16> = full_chat_text.encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&chat_u16, &self.notif_body_format, text_w, 12_000.0)
+            {
+                let mut metrics = DWRITE_TEXT_METRICS::default();
+                let content_h = if layout.GetMetrics(&mut metrics).is_ok() {
+                    metrics.height
+                } else {
+                    view_h
+                };
+                let max_scroll = (content_h - view_h).max(0.0);
+                self.last_chat_max_scroll = max_scroll;
+
+                let scroll_y = if frame.chat_auto_scroll {
+                    max_scroll
+                } else {
+                    frame.chat_scroll_y.clamp(0.0, max_scroll)
+                };
+
+                // Clip strictly to the inside of the chat card so scrolled text never bleeds out
+                let card_clip = D2D_RECT_F {
+                    left: origin_x + cl.card.left + 6.0,
+                    top: origin_y + cl.card.top + 6.0,
+                    right: origin_x + cl.card.right - 9.0,
+                    bottom: origin_y + cl.card.bottom - 6.0,
+                };
+                self.target
+                    .PushAxisAlignedClip(&card_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+                let draw_pt = D2D_POINT_2F {
+                    x: origin_x + cl.card.left + pad_l,
+                    y: origin_y + cl.card.top + pad_v - scroll_y,
+                };
+
+                if is_err {
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: 0.99,
+                        g: 0.62,
+                        b: 0.66,
+                        a: 0.96 * alpha,
+                    });
+                    self.target.DrawTextLayout(
+                        draw_pt,
+                        &layout,
+                        &self.dynamic_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                } else {
+                    self.notif_title_brush
+                        .SetOpacity(if is_placeholder_body { 0.66 } else { 0.95 } * alpha);
+                    self.target.DrawTextLayout(
+                        draw_pt,
+                        &layout,
+                        &self.notif_title_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+
+                self.target.PopAxisAlignedClip();
+
+                // Sleek vertical scrollbar thumb when content exceeds viewport
+                if max_scroll > 1.0 {
+                    let track_top = origin_y + cl.card.top + 10.0;
+                    let track_h = (cl.card.height() - 20.0).max(20.0);
+                    let thumb_h = ((view_h / content_h.max(1.0)) * track_h).clamp(22.0, track_h);
+                    let ratio = (scroll_y / max_scroll).clamp(0.0, 1.0);
+                    let thumb_top = track_top + ratio * (track_h - thumb_h);
+                    let sb_x = origin_x + cl.card.right - 7.0;
+
+                    let track_rect = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: sb_x,
+                            top: track_top,
+                            right: sb_x + 3.5,
+                            bottom: track_top + track_h,
+                        },
+                        radiusX: 1.75,
+                        radiusY: 1.75,
+                    };
+                    self.hover_brush.SetOpacity(0.10 * alpha);
+                    self.target
+                        .FillRoundedRectangle(&track_rect, &self.hover_brush);
+
+                    let thumb_rect = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: sb_x,
+                            top: thumb_top,
+                            right: sb_x + 3.5,
+                            bottom: thumb_top + thumb_h,
+                        },
+                        radiusX: 1.75,
+                        radiusY: 1.75,
+                    };
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: ar,
+                        g: ag,
+                        b: ab,
+                        a: 0.72 * alpha,
+                    });
+                    self.target
+                        .FillRoundedRectangle(&thumb_rect, &self.dynamic_brush);
+                }
+            } else {
+                self.last_chat_max_scroll = 0.0;
+            }
+
+            // Optional Attached File chip above input bar (click to detach)
+            if let Some(file_lbl) = frame.attached_file_label {
+                let chip_hov = hovered == Some(HitTarget::ZekiRemoveFile);
+                let chip = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: origin_x + cl.file_chip.left,
+                        top: origin_y + cl.file_chip.top,
+                        right: origin_x + cl.file_chip.right,
+                        bottom: origin_y + cl.file_chip.bottom,
+                    },
+                    radiusX: 9.0,
+                    radiusY: 9.0,
+                };
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: if chip_hov { 0.28 } else { 0.16 } * alpha,
+                });
+                self.target
+                    .FillRoundedRectangle(&chip, &self.dynamic_brush);
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.55 * alpha,
+                });
+                self.target
+                    .DrawRoundedRectangle(&chip, &self.dynamic_brush, 0.9, None);
+
+                let chip_text = format!("File: {file_lbl}   (click to remove ×)");
+                if let Ok(layout) = create_layout(
+                    &self.dwrite,
+                    &self.notif_app_format,
+                    &self.notif_body_trim,
+                    &chip_text,
+                    cl.file_chip.width() - 16.0,
+                    16.0,
+                ) {
+                    self.title_brush.SetOpacity(0.94 * alpha);
+                    self.target.DrawTextLayout(
+                        D2D_POINT_2F {
+                            x: origin_x + cl.file_chip.left + 8.0,
+                            y: origin_y + cl.file_chip.top + 2.5,
+                        },
+                        &layout,
+                        &self.title_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+            }
+
+            // +File attach button on the left of the input bar
+            let att_hov = hovered == Some(HitTarget::ZekiAttachFile);
+            let att_btn = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + cl.attach_btn.left,
+                    top: origin_y + cl.attach_btn.top,
+                    right: origin_x + cl.attach_btn.right,
+                    bottom: origin_y + cl.attach_btn.bottom,
+                },
+                radiusX: 11.0,
+                radiusY: 11.0,
+            };
+            self.hover_brush
+                .SetOpacity(if att_hov { 0.18 } else { 0.08 } * alpha);
+            self.target.FillRoundedRectangle(&att_btn, &self.hover_brush);
+            if has_file || att_hov {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.65 * alpha,
+                });
+                self.target
+                    .DrawRoundedRectangle(&att_btn, &self.dynamic_brush, 1.0, None);
+            }
+            let att_u16: Vec<u16> = "+File".encode_utf16().collect();
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &att_u16,
+                &self.pill_btn_format,
+                cl.attach_btn.width(),
+                cl.attach_btn.height(),
+            ) {
+                self.title_brush
+                    .SetOpacity(if has_file || att_hov { 0.98 } else { 0.82 } * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + cl.attach_btn.left,
+                        y: origin_y + cl.attach_btn.top,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+
+            // Bottom chat input box + Send button
+            let input_hov = hovered == Some(HitTarget::ZekiChatInput);
+            let input_box = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + cl.input.left,
+                    top: origin_y + cl.input.top,
+                    right: origin_x + cl.input.right,
+                    bottom: origin_y + cl.input.bottom,
+                },
+                radiusX: 11.0,
+                radiusY: 11.0,
+            };
+            self.hover_brush.SetOpacity(
+                if frame.chat_focused {
+                    0.11
+                } else if input_hov {
+                    0.09
+                } else {
+                    0.06
+                } * alpha,
+            );
+            self.target
+                .FillRoundedRectangle(&input_box, &self.hover_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: if frame.chat_focused {
+                    0.82
+                } else if input_hov {
+                    0.45
+                } else {
+                    0.22
+                } * alpha,
+            });
+            self.target.DrawRoundedRectangle(
+                &input_box,
+                &self.dynamic_brush,
+                if frame.chat_focused { 1.3 } else { 1.0 },
+                None,
+            );
+
+            // Blinking caret every ~530ms when focused
+            let caret_on = frame.chat_focused
+                && ((std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() / 530)
+                    .unwrap_or(0)
+                    % 2)
+                    == 0);
+
+            let max_visible_chars = ((cl.input.width() - 22.0) / 6.5).max(24.0) as usize;
+            let (input_display, is_placeholder) = if frame.chat_input.is_empty() {
+                if frame.chat_focused {
+                    (if caret_on { "|".to_string() } else { String::new() }, false)
+                } else {
+                    ("Ketik pesan ke Zeki...".to_string(), true)
+                }
+            } else {
+                let chars: Vec<char> = frame.chat_input.chars().collect();
+                let mut s: String = if chars.len() > max_visible_chars {
+                    format!(
+                        "…{}",
+                        chars[chars.len() - (max_visible_chars - 1)..]
+                            .iter()
+                            .collect::<String>()
+                    )
+                } else {
+                    frame.chat_input.to_string()
+                };
+                if caret_on {
+                    s.push('|');
+                }
+                (s, false)
+            };
+
+            if !input_display.is_empty() {
+                let u16_in: Vec<u16> = input_display.encode_utf16().collect();
+                if let Ok(layout) = self.dwrite.CreateTextLayout(
+                    &u16_in,
+                    &self.notif_body_format,
+                    cl.input.width() - 18.0,
+                    20.0,
+                ) {
+                    if is_placeholder {
+                        self.notif_body_brush.SetOpacity(0.55 * alpha);
+                        self.target.DrawTextLayout(
+                            D2D_POINT_2F {
+                                x: origin_x + cl.input.left + 10.0,
+                                y: origin_y + cl.input.top + 8.0,
+                            },
+                            &layout,
+                            &self.notif_body_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    } else {
+                        self.title_brush.SetOpacity(0.96 * alpha);
+                        self.target.DrawTextLayout(
+                            D2D_POINT_2F {
+                                x: origin_x + cl.input.left + 10.0,
+                                y: origin_y + cl.input.top + 8.0,
+                            },
+                            &layout,
+                            &self.title_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    }
+                }
+            }
+
+            // Send button
+            let has_text = !frame.chat_input.trim().is_empty();
+            let send_hov = hovered == Some(HitTarget::ZekiChatSend);
+            let send_btn = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + cl.send_btn.left,
+                    top: origin_y + cl.send_btn.top,
+                    right: origin_x + cl.send_btn.right,
+                    bottom: origin_y + cl.send_btn.bottom,
+                },
+                radiusX: 11.0,
+                radiusY: 11.0,
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: if has_text {
+                    if send_hov { 0.44 } else { 0.30 }
+                } else {
+                    0.10
+                } * alpha,
+            });
+            self.target
+                .FillRoundedRectangle(&send_btn, &self.dynamic_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: if has_text { 0.85 } else { 0.28 } * alpha,
+            });
+            self.target
+                .DrawRoundedRectangle(&send_btn, &self.dynamic_brush, 1.0, None);
+            let send_u16: Vec<u16> = "Send".encode_utf16().collect();
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &send_u16,
+                &self.pill_btn_format,
+                cl.send_btn.width(),
+                cl.send_btn.height(),
+            ) {
+                self.title_brush
+                    .SetOpacity(if has_text { 0.98 } else { 0.50 } * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + cl.send_btn.left,
+                        y: origin_y + cl.send_btn.top,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+            return;
+        }
+        self.last_chat_max_scroll = 0.0;
+
+        // Branch 2: Default Zeki tab — Chat + Mic + Config + Privacy Toggle + 7 State Preview Buttons
+        self.draw_privacy_pill(
+            origin_x,
+            origin_y,
+            &ZEKI_PRIVACY_BTN_PREVIEW,
+            assistant.screen_access_enabled,
+            hovered == Some(HitTarget::ZekiTogglePrivacy),
+            alpha,
+        );
+
+        let heading: Vec<u16> = "Zeki".encode_utf16().collect();
         if let Ok(layout) =
             self.dwrite
-                .CreateTextLayout(&clock_u16, &self.clock_media_format, 74.0, 30.0)
+                .CreateTextLayout(&heading, &self.title_format, 76.0, 26.0)
         {
-            self.title_brush.SetOpacity(0.96 * alpha);
+            self.title_brush.SetOpacity(0.98 * alpha);
             self.target.DrawTextLayout(
                 D2D_POINT_2F {
-                    x: origin_x + 350.0,
-                    y: origin_y + CONTROLS_TOP,
+                    x: origin_x + 132.0,
+                    y: origin_y + 43.0,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Quick Chat button
+        let chat_hov = hovered == Some(HitTarget::ZekiOpenChat);
+        let chat_btn = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + ZEKI_CHAT_BTN_PREVIEW.left,
+                top: origin_y + ZEKI_CHAT_BTN_PREVIEW.top,
+                right: origin_x + ZEKI_CHAT_BTN_PREVIEW.right,
+                bottom: origin_y + ZEKI_CHAT_BTN_PREVIEW.bottom,
+            },
+            radiusX: 11.0,
+            radiusY: 11.0,
+        };
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: ar,
+            g: ag,
+            b: ab,
+            a: if chat_hov { 0.34 } else { 0.22 } * alpha,
+        });
+        self.target
+            .FillRoundedRectangle(&chat_btn, &self.dynamic_brush);
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: ar,
+            g: ag,
+            b: ab,
+            a: if chat_hov { 0.95 } else { 0.62 } * alpha,
+        });
+        self.target
+            .DrawRoundedRectangle(&chat_btn, &self.dynamic_brush, 1.0, None);
+        let chat_lbl: Vec<u16> = "Chat".encode_utf16().collect();
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &chat_lbl,
+            &self.pill_btn_format,
+            ZEKI_CHAT_BTN_PREVIEW.width(),
+            ZEKI_CHAT_BTN_PREVIEW.height(),
+        ) {
+            self.title_brush.SetOpacity(0.98 * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + ZEKI_CHAT_BTN_PREVIEW.left,
+                    y: origin_y + ZEKI_CHAT_BTN_PREVIEW.top,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Quick Mic button (Hands-free VAD click-to-talk)
+        let mic_hov = hovered == Some(HitTarget::ZekiMicToggle);
+        let mic_btn = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + ZEKI_MIC_BTN_PREVIEW.left,
+                top: origin_y + ZEKI_MIC_BTN_PREVIEW.top,
+                right: origin_x + ZEKI_MIC_BTN_PREVIEW.right,
+                bottom: origin_y + ZEKI_MIC_BTN_PREVIEW.bottom,
+            },
+            radiusX: 11.0,
+            radiusY: 11.0,
+        };
+        self.hover_brush
+            .SetOpacity(if mic_hov { 0.18 } else { 0.085 } * alpha);
+        self.target.FillRoundedRectangle(&mic_btn, &self.hover_brush);
+        let mic_lbl: Vec<u16> = "Mic".encode_utf16().collect();
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &mic_lbl,
+            &self.pill_btn_format,
+            ZEKI_MIC_BTN_PREVIEW.width(),
+            ZEKI_MIC_BTN_PREVIEW.height(),
+        ) {
+            self.title_brush.SetOpacity(0.98 * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + ZEKI_MIC_BTN_PREVIEW.left,
+                    y: origin_y + ZEKI_MIC_BTN_PREVIEW.top,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Config button (opens assistant.ini)
+        let cfg_hov = hovered == Some(HitTarget::ZekiOpenConfig);
+        let cfg_btn = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + ZEKI_CFG_BTN_PREVIEW.left,
+                top: origin_y + ZEKI_CFG_BTN_PREVIEW.top,
+                right: origin_x + ZEKI_CFG_BTN_PREVIEW.right,
+                bottom: origin_y + ZEKI_CFG_BTN_PREVIEW.bottom,
+            },
+            radiusX: 11.0,
+            radiusY: 11.0,
+        };
+        self.hover_brush
+            .SetOpacity(if cfg_hov { 0.18 } else { 0.075 } * alpha);
+        self.target.FillRoundedRectangle(&cfg_btn, &self.hover_brush);
+        let cfg_lbl: Vec<u16> = "Config".encode_utf16().collect();
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &cfg_lbl,
+            &self.pill_btn_format,
+            ZEKI_CFG_BTN_PREVIEW.width(),
+            ZEKI_CFG_BTN_PREVIEW.height(),
+        ) {
+            self.title_brush
+                .SetOpacity(if cfg_hov { 1.0 } else { 0.80 } * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + ZEKI_CFG_BTN_PREVIEW.left,
+                    y: origin_y + ZEKI_CFG_BTN_PREVIEW.top,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Status subtitle line
+        let status_str = if zeki.state() != crate::render::zeki::ZekiState::Idle {
+            format!("{} • {}", zeki.state().label(), zeki.state().status_line())
+        } else if assistant.has_config_key {
+            format!("Hold {} to talk • {}", frame.ptt_hotkey_short, assistant.provider_label)
+        } else {
+            "Click Config -> OpenRouter / OpenCode / NVIDIA / Gemini".to_string()
+        };
+        let status: Vec<u16> = status_str.encode_utf16().collect();
+        if let Ok(layout) =
+            self.dwrite
+                .CreateTextLayout(&status, &self.notif_body_format, 290.0, 18.0)
+        {
+            self.notif_body_brush.SetOpacity(0.82 * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + 132.0,
+                    y: origin_y + 70.0,
+                },
+                &layout,
+                &self.notif_body_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // 7 interactive state preview buttons (2 balanced rows)
+        for (i, &state) in ALL_ZEKI_STATES.iter().enumerate() {
+            let rect = zeki_state_btn_rect(i);
+            let is_active = zeki.state() == state;
+            let is_hov = hovered == Some(HitTarget::ZekiSelectState(state));
+            let (sr, sg, sb) = state.accent_rgb();
+
+            let btn = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: origin_x + rect.left,
+                    top: origin_y + rect.top,
+                    right: origin_x + rect.right,
+                    bottom: origin_y + rect.bottom,
+                },
+                radiusX: 11.5,
+                radiusY: 11.5,
+            };
+
+            if is_active {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: sr,
+                    g: sg,
+                    b: sb,
+                    a: 0.28 * alpha,
+                });
+                self.target.FillRoundedRectangle(&btn, &self.dynamic_brush);
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: sr,
+                    g: sg,
+                    b: sb,
+                    a: 0.85 * alpha,
+                });
+                self.target
+                    .DrawRoundedRectangle(&btn, &self.dynamic_brush, 1.0, None);
+            } else {
+                self.hover_brush
+                    .SetOpacity(if is_hov { 0.16 } else { 0.065 } * alpha);
+                self.target.FillRoundedRectangle(&btn, &self.hover_brush);
+                if is_hov {
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: sr,
+                        g: sg,
+                        b: sb,
+                        a: 0.45 * alpha,
+                    });
+                    self.target
+                        .DrawRoundedRectangle(&btn, &self.dynamic_brush, 1.0, None);
+                }
+            }
+
+            // Tiny mood color dot inside each button
+            let dot_x = origin_x + rect.left + 11.0;
+            let dot_y = origin_y + rect.top + rect.height() / 2.0;
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: sr,
+                g: sg,
+                b: sb,
+                a: if is_active { 1.0 } else { 0.72 } * alpha,
+            });
+            self.target.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: D2D_POINT_2F { x: dot_x, y: dot_y },
+                    radiusX: 3.0,
+                    radiusY: 3.0,
+                },
+                &self.dynamic_brush,
+            );
+
+            let lbl: Vec<u16> = state.short_label().encode_utf16().collect();
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &lbl,
+                &self.pill_btn_format,
+                rect.width() - 12.0,
+                rect.height(),
+            ) {
+                self.title_brush
+                    .SetOpacity(if is_active { 1.0 } else if is_hov { 0.94 } else { 0.74 } * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + rect.left + 10.0,
+                        y: origin_y + rect.top,
+                    },
+                    &layout,
+                    &self.title_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+    }
+
+    /// Persistent Zeki Companion Dock shown at the bottom of every non-Zeki sub-menu
+    /// (`Media`, `Timer`, `Clip`, `Sys`, `Notifs`) with live Zeki + instant Chat & Listen buttons.
+    unsafe fn draw_zeki_dock(&self, origin_x: f32, origin_y: f32, frame: &Frame, alpha: f32) {
+        let (ar, ag, ab) = frame.zeki.accent_color();
+        let hovered = frame.hovered_target;
+
+        let dock = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + ZEKI_DOCK_RECT.left,
+                top: origin_y + ZEKI_DOCK_RECT.top,
+                right: origin_x + ZEKI_DOCK_RECT.right,
+                bottom: origin_y + ZEKI_DOCK_RECT.bottom,
+            },
+            radiusX: 14.0,
+            radiusY: 14.0,
+        };
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: ar,
+            g: ag,
+            b: ab,
+            a: 0.075 * alpha,
+        });
+        self.target.FillRoundedRectangle(&dock, &self.dynamic_brush);
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: ar,
+            g: ag,
+            b: ab,
+            a: 0.24 * alpha,
+        });
+        self.target
+            .DrawRoundedRectangle(&dock, &self.dynamic_brush, 1.0, None);
+
+        // Living Mini Zeki on the left of the dock
+        let dock_cy = origin_y + ZEKI_DOCK_RECT.top + ZEKI_DOCK_RECT.height() / 2.0;
+        frame.zeki.draw(
+            &self.factory,
+            &self.target,
+            &self.dynamic_brush,
+            self.round_stroke.as_ref(),
+            &self.dwrite,
+            &self.badge_format,
+            origin_x + 35.0,
+            dock_cy + 1.0,
+            10.5,
+            alpha,
+            true,
+        );
+
+        // Middle interactive status / quick-chat prompt (or live mic waveform when Listening)
+        if frame.assistant.phase == AssistantPhase::Listening {
+            let lbl: Vec<u16> = "Listening... speak now".encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&lbl, &self.notif_title_format, 146.0, 18.0)
+            {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: (ar * 0.45 + 0.55).min(1.0),
+                    g: (ag * 0.45 + 0.55).min(1.0),
+                    b: (ab * 0.45 + 0.55).min(1.0),
+                    a: 0.98 * alpha,
+                });
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + 56.0,
+                        y: dock_cy - 8.5,
+                    },
+                    &layout,
+                    &self.dynamic_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+
+            // Live 5-bar voice level indicator inside dock
+            let level = frame.voice_level.clamp(0.08, 1.0);
+            let weights = [0.55f32, 0.85, 1.0, 0.80, 0.50];
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: ar,
+                g: ag,
+                b: ab,
+                a: 0.95 * alpha,
+            });
+            for (i, &mul) in weights.iter().enumerate() {
+                let bh = (4.0 + 13.0 * level * mul).clamp(4.0, 17.0);
+                let bx = origin_x + 216.0 + i as f32 * 6.0;
+                let bar = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: bx,
+                        top: dock_cy - bh / 2.0,
+                        right: bx + 3.0,
+                        bottom: dock_cy + bh / 2.0,
+                    },
+                    radiusX: 1.5,
+                    radiusY: 1.5,
+                };
+                self.target.FillRoundedRectangle(&bar, &self.dynamic_brush);
+            }
+        } else {
+            let prompt_text = match frame.assistant.phase {
+                AssistantPhase::Transcribing => "Transcribing voice...".to_string(),
+                AssistantPhase::Thinking if frame.assistant.screen_capturing_now => {
+                    "Seeing screen...".to_string()
+                }
+                AssistantPhase::Thinking => format!("Thinking ({})...", frame.assistant.provider_label),
+                AssistantPhase::Speaking => "Zeki replying...".to_string(),
+                _ => format!("Ask Zeki ({})", frame.assistant.provider_label),
+            };
+            if let Ok(layout) = create_layout(
+                &self.dwrite,
+                &self.notif_body_format,
+                &self.notif_body_trim,
+                &prompt_text,
+                156.0,
+                18.0,
+            ) {
+                self.notif_body_brush.SetOpacity(0.84 * alpha);
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + 56.0,
+                        y: dock_cy - 8.0,
+                    },
+                    &layout,
+                    &self.notif_body_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+
+        // Quick Privacy Toggle inside Companion Dock (Screen ON / Incognito)
+        self.draw_privacy_pill(
+            origin_x,
+            origin_y,
+            &ZEKI_DOCK_PRIVACY_BTN,
+            frame.assistant.screen_access_enabled,
+            hovered == Some(HitTarget::ZekiTogglePrivacy),
+            alpha,
+        );
+
+        // Quick Chat button
+        let chat_hov = hovered == Some(HitTarget::ZekiOpenChat);
+        let chat_btn = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + ZEKI_DOCK_CHAT_BTN.left,
+                top: origin_y + ZEKI_DOCK_CHAT_BTN.top,
+                right: origin_x + ZEKI_DOCK_CHAT_BTN.right,
+                bottom: origin_y + ZEKI_DOCK_CHAT_BTN.bottom,
+            },
+            radiusX: 12.0,
+            radiusY: 12.0,
+        };
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: ar,
+            g: ag,
+            b: ab,
+            a: if chat_hov { 0.34 } else { 0.20 } * alpha,
+        });
+        self.target
+            .FillRoundedRectangle(&chat_btn, &self.dynamic_brush);
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: ar,
+            g: ag,
+            b: ab,
+            a: if chat_hov { 0.92 } else { 0.56 } * alpha,
+        });
+        self.target
+            .DrawRoundedRectangle(&chat_btn, &self.dynamic_brush, 1.0, None);
+        let chat_u16: Vec<u16> = "Chat".encode_utf16().collect();
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &chat_u16,
+            &self.pill_btn_format,
+            ZEKI_DOCK_CHAT_BTN.width(),
+            ZEKI_DOCK_CHAT_BTN.height(),
+        ) {
+            self.title_brush.SetOpacity(0.98 * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + ZEKI_DOCK_CHAT_BTN.left,
+                    y: origin_y + ZEKI_DOCK_CHAT_BTN.top,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Quick Listen / Stop button
+        let is_listening = frame.assistant.phase == AssistantPhase::Listening;
+        let mic_hov = hovered == Some(HitTarget::ZekiMicToggle);
+        let mic_btn = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + ZEKI_DOCK_MIC_BTN.left,
+                top: origin_y + ZEKI_DOCK_MIC_BTN.top,
+                right: origin_x + ZEKI_DOCK_MIC_BTN.right,
+                bottom: origin_y + ZEKI_DOCK_MIC_BTN.bottom,
+            },
+            radiusX: 12.0,
+            radiusY: 12.0,
+        };
+        if is_listening {
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 0.94,
+                g: 0.27,
+                b: 0.35,
+                a: 0.38 * alpha,
+            });
+            self.target
+                .FillRoundedRectangle(&mic_btn, &self.dynamic_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 0.98,
+                g: 0.38,
+                b: 0.45,
+                a: 0.92 * alpha,
+            });
+            self.target
+                .DrawRoundedRectangle(&mic_btn, &self.dynamic_brush, 1.0, None);
+        } else {
+            self.hover_brush
+                .SetOpacity(if mic_hov { 0.20 } else { 0.09 } * alpha);
+            self.target
+                .FillRoundedRectangle(&mic_btn, &self.hover_brush);
+            if mic_hov {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.65 * alpha,
+                });
+                self.target
+                    .DrawRoundedRectangle(&mic_btn, &self.dynamic_brush, 1.0, None);
+            }
+        }
+        let mic_lbl = if is_listening {
+            "Stop"
+        } else if frame.assistant.phase.is_busy() {
+            "Cancel"
+        } else {
+            "Listen"
+        };
+        let mic_u16: Vec<u16> = mic_lbl.encode_utf16().collect();
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &mic_u16,
+            &self.pill_btn_format,
+            ZEKI_DOCK_MIC_BTN.width(),
+            ZEKI_DOCK_MIC_BTN.height(),
+        ) {
+            self.title_brush
+                .SetOpacity(if is_listening || mic_hov { 1.0 } else { 0.88 } * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + ZEKI_DOCK_MIC_BTN.left,
+                    y: origin_y + ZEKI_DOCK_MIC_BTN.top,
                 },
                 &layout,
                 &self.title_brush,
@@ -1020,32 +2566,227 @@ impl Renderer {
         }
     }
 
+    /// Draws a compact Privacy Toggle pill (`Screen: ON` / `Incognito`, or compact `Eye` / `Priv` in dock).
+    unsafe fn draw_privacy_pill(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        rect: &RectF,
+        screen_on: bool,
+        hovered: bool,
+        alpha: f32,
+    ) {
+        let pill = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + rect.left,
+                top: origin_y + rect.top,
+                right: origin_x + rect.right,
+                bottom: origin_y + rect.bottom,
+            },
+            radiusX: rect.height() / 2.0,
+            radiusY: rect.height() / 2.0,
+        };
+
+        let (r, g, b) = if screen_on {
+            (0.14, 0.83, 0.72) // Emerald-Cyan: Screen Vision active
+        } else {
+            (0.96, 0.68, 0.22) // Warm Amber: Incognito / Private
+        };
+
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r,
+            g,
+            b,
+            a: if hovered { 0.28 } else { 0.14 } * alpha,
+        });
+        self.target.FillRoundedRectangle(&pill, &self.dynamic_brush);
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r,
+            g,
+            b,
+            a: if hovered { 0.88 } else { 0.48 } * alpha,
+        });
+        self.target
+            .DrawRoundedRectangle(&pill, &self.dynamic_brush, 1.0, None);
+
+        // Status dot inside button
+        let dot_x = origin_x + rect.left + 10.0;
+        let dot_y = origin_y + rect.top + rect.height() / 2.0;
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r,
+            g,
+            b,
+            a: 0.98 * alpha,
+        });
+        self.target.FillEllipse(
+            &D2D1_ELLIPSE {
+                point: D2D_POINT_2F { x: dot_x, y: dot_y },
+                radiusX: 3.0,
+                radiusY: 3.0,
+            },
+            &self.dynamic_brush,
+        );
+
+        let compact = rect.width() < 75.0;
+        let label = match (screen_on, compact) {
+            (true, false) => "Screen: ON",
+            (false, false) => "Incognito",
+            (true, true) => "Eye",
+            (false, true) => "Priv",
+        };
+        let u16_lbl: Vec<u16> = label.encode_utf16().collect();
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &u16_lbl,
+            &self.pill_btn_format,
+            rect.width() - 12.0,
+            rect.height(),
+        ) {
+            self.title_brush
+                .SetOpacity(if hovered { 1.0 } else { 0.90 } * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + rect.left + 9.0,
+                    y: origin_y + rect.top,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+    }
+
+    unsafe fn draw_expanded_media(&self, origin_x: f32, origin_y: f32, frame: &Frame, alpha: f32) {
+        // Media logo / album art on the top-left directly above the clock
+        self.draw_art(origin_x, origin_y, &EXPANDED_ART, EXPANDED_ART_RADIUS);
+
+        // Bold clock centered directly beneath the media logo on the left
+        let clock = current_clock_string();
+        let clock_u16: Vec<u16> = clock.encode_utf16().collect();
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &clock_u16,
+            &self.clock_media_format,
+            MEDIA_CLOCK_BOX.width(),
+            MEDIA_CLOCK_BOX.height(),
+        ) {
+            self.title_brush.SetOpacity(0.96 * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + MEDIA_CLOCK_BOX.left,
+                    y: origin_y + MEDIA_CLOCK_BOX.top,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Right column: title, artist, playback controls, and live 5-bar FFT equalizer
+        self.draw_text(origin_x, origin_y, alpha);
+
+        let hovered_ctrl = match frame.hovered_target {
+            Some(HitTarget::MediaControl(c)) => Some(c),
+            _ => None,
+        };
+        self.draw_controls(origin_x, origin_y, alpha, frame.media.is_playing, hovered_ctrl);
+
+        self.draw_equalizer(
+            origin_x,
+            origin_y,
+            CONTROLS_TOP + 15.0,
+            &frame.eq_levels,
+            frame.media.is_playing,
+            alpha,
+            416.0,
+            4.5,
+            4.0,
+            4.0,
+            22.0,
+        );
+    }
+
     unsafe fn draw_idle_expanded(
         &self,
         pill_left: f32,
         pill_top: f32,
         pill_width: f32,
-        pill_height: f32,
+        _pill_height: f32,
         system: &SystemSnapshot,
         notif: &NotificationSnapshot,
         alpha: f32,
     ) {
-        let pad_x = 22.0f32;
-        let content_w = (pill_width - pad_x * 2.0).max(40.0);
+        // Media logo badge on the top-left directly above the clock
+        let logo_rect = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: pill_left + EXPANDED_ART.left,
+                top: pill_top + EXPANDED_ART.top,
+                right: pill_left + EXPANDED_ART.right,
+                bottom: pill_top + EXPANDED_ART.bottom,
+            },
+            radiusX: EXPANDED_ART_RADIUS,
+            radiusY: EXPANDED_ART_RADIUS,
+        };
+        self.placeholder_brush.SetOpacity(alpha);
+        self.target
+            .FillRoundedRectangle(&logo_rect, &self.placeholder_brush);
+        self.hover_brush.SetOpacity(0.10 * alpha);
+        self.target
+            .DrawRoundedRectangle(&logo_rect, &self.hover_brush, 1.0, None);
 
-        // Hero clock (`34px` Bold) + short date & status
+        let note: Vec<u16> = "♪".encode_utf16().collect();
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &note,
+            &self.clock_hero_format,
+            EXPANDED_ART.width(),
+            EXPANDED_ART.height(),
+        ) {
+            self.title_brush.SetOpacity(0.72 * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: pill_left + EXPANDED_ART.left + 25.0,
+                    y: pill_top + EXPANDED_ART.top + 14.0,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Bold clock centered directly beneath the media logo on the left
         let st = GetLocalTime();
         let clock = format!("{:02}:{:02}", st.wHour, st.wMinute);
         let clock_u16: Vec<u16> = clock.encode_utf16().collect();
-        if let Ok(layout) =
-            self.dwrite
-                .CreateTextLayout(&clock_u16, &self.clock_hero_format, 125.0, 44.0)
-        {
-            self.title_brush.SetOpacity(alpha);
+        if let Ok(layout) = self.dwrite.CreateTextLayout(
+            &clock_u16,
+            &self.clock_media_format,
+            MEDIA_CLOCK_BOX.width(),
+            MEDIA_CLOCK_BOX.height(),
+        ) {
+            self.title_brush.SetOpacity(0.98 * alpha);
             self.target.DrawTextLayout(
                 D2D_POINT_2F {
-                    x: pill_left + pad_x,
-                    y: pill_top + 48.0,
+                    x: pill_left + MEDIA_CLOCK_BOX.left,
+                    y: pill_top + MEDIA_CLOCK_BOX.top,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Right column: Date + Media status + live Volume slider
+        let right_x = pill_left + 112.0;
+        let right_w = (pill_width - 132.0).max(80.0);
+
+        let heading_u16: Vec<u16> = "No media playing".encode_utf16().collect();
+        if let Ok(layout) =
+            self.dwrite
+                .CreateTextLayout(&heading_u16, &self.title_format, right_w, 26.0)
+        {
+            self.title_brush.SetOpacity(0.94 * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: right_x,
+                    y: pill_top + 46.0,
                 },
                 &layout,
                 &self.title_brush,
@@ -1057,18 +2798,18 @@ impl Renderer {
         let sub_text = if notif.unread_count() > 0 {
             format!("{date_str}  •  {} unread", notif.unread_count())
         } else {
-            format!("{date_str}  •  No media playing")
+            date_str
         };
         let sub: Vec<u16> = sub_text.encode_utf16().collect();
         if let Ok(layout) =
             self.dwrite
-                .CreateTextLayout(&sub, &self.artist_format, content_w - 122.0, 24.0)
+                .CreateTextLayout(&sub, &self.artist_format, right_w, 22.0)
         {
-            self.artist_brush.SetOpacity(0.78 * alpha);
+            self.artist_brush.SetOpacity(0.75 * alpha);
             self.target.DrawTextLayout(
                 D2D_POINT_2F {
-                    x: pill_left + pad_x + 118.0,
-                    y: pill_top + 62.0,
+                    x: right_x,
+                    y: pill_top + 73.0,
                 },
                 &layout,
                 &self.artist_brush,
@@ -1076,8 +2817,8 @@ impl Renderer {
             );
         }
 
-        // Live system volume bar
-        let bar_y = pill_top + pill_height - 24.0;
+        // Live system volume bar (sits cleanly above Zeki Companion Dock)
+        let bar_y = pill_top + 128.0;
         let bar_h = 6.0f32;
         let vol_label = if system.muted {
             "Volume  •  Muted".to_string()
@@ -1087,12 +2828,12 @@ impl Renderer {
         let vol_u16: Vec<u16> = vol_label.encode_utf16().collect();
         if let Ok(layout) =
             self.dwrite
-                .CreateTextLayout(&vol_u16, &self.hud_format, content_w, 16.0)
+                .CreateTextLayout(&vol_u16, &self.hud_format, right_w, 16.0)
         {
-            self.hud_text_brush.SetOpacity(0.66 * alpha);
+            self.hud_text_brush.SetOpacity(0.68 * alpha);
             self.target.DrawTextLayout(
                 D2D_POINT_2F {
-                    x: pill_left + pad_x,
+                    x: right_x,
                     y: bar_y - 19.0,
                 },
                 &layout,
@@ -1103,9 +2844,9 @@ impl Renderer {
 
         let track = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F {
-                left: pill_left + pad_x,
+                left: right_x,
                 top: bar_y,
-                right: pill_left + pad_x + content_w,
+                right: right_x + right_w,
                 bottom: bar_y + bar_h,
             },
             radiusX: bar_h / 2.0,
@@ -1115,14 +2856,14 @@ impl Renderer {
         self.target
             .FillRoundedRectangle(&track, &self.hud_track_brush);
 
-        let fill_w = (content_w * system.volume.clamp(0.0, 1.0))
+        let fill_w = (right_w * system.volume.clamp(0.0, 1.0))
             .max(if system.volume > 0.001 { bar_h } else { 0.0 });
         if fill_w > 0.0 {
             let fill = D2D1_ROUNDED_RECT {
                 rect: D2D_RECT_F {
-                    left: pill_left + pad_x,
+                    left: right_x,
                     top: bar_y,
-                    right: pill_left + pad_x + fill_w,
+                    right: right_x + fill_w,
                     bottom: bar_y + bar_h,
                 },
                 radiusX: bar_h / 2.0,
@@ -2747,6 +4488,57 @@ unsafe fn build_control_icon(
 
     sink.Close()?;
     Ok(geometry)
+}
+
+fn build_chat_transcript(assistant: &AssistantSnapshot) -> (String, bool, bool) {
+    if let Some(err) = &assistant.error {
+        return (err.clone(), true, false);
+    }
+
+    let mut sections: Vec<String> = Vec::new();
+    for msg in &assistant.messages {
+        let speaker = if msg.is_user { "You" } else { "Zeki" };
+        sections.push(format!("{speaker}: {}", msg.text.trim()));
+    }
+
+    // Show the active in-flight turn (prompt + streaming reply) when not yet committed to history
+    let last_committed_is_current = assistant
+        .messages
+        .last()
+        .map(|m| !m.is_user && !assistant.reply.is_empty() && m.text.trim() == assistant.reply.trim())
+        .unwrap_or(false);
+
+    if !last_committed_is_current {
+        if !assistant.transcript.is_empty() {
+            sections.push(format!("You: {}", assistant.transcript.trim()));
+        }
+        if !assistant.reply.is_empty() {
+            let mut reply_line = format!("Zeki: {}", assistant.reply.trim());
+            if assistant.phase == AssistantPhase::Speaking {
+                reply_line.push('▍');
+            }
+            sections.push(reply_line);
+        } else if assistant.phase == AssistantPhase::Thinking {
+            sections.push("Zeki: Sedang memikirkan jawaban...".to_string());
+        } else if assistant.phase == AssistantPhase::Transcribing {
+            sections.push("Zeki: Mengubah suara menjadi teks...".to_string());
+        } else if assistant.phase == AssistantPhase::Listening {
+            sections.push("Zeki: Silakan bicara... (lepas Alt+Space atau tunggu hening)".to_string());
+        }
+    }
+
+    if !sections.is_empty() {
+        return (sections.join("\n\n"), false, false);
+    }
+
+    let placeholder = if assistant.has_config_key {
+        "Halo! Ketik pesan di bawah lalu tekan Enter, atau klik Mic untuk bicara.\n\nTips:\n• Scroll roda mouse atau klik-geser kotak ini untuk membaca chat panjang.\n• Klik 2x (double-click) kotak chat untuk memperbesar/memperkecil."
+            .to_string()
+    } else {
+        "Klik Config di kiri bawah untuk isi API key gratis (Gemini 3.8 Flash / OpenRouter / OpenCode / NVIDIA)."
+            .to_string()
+    };
+    (placeholder, false, true)
 }
 
 fn point(x: f32, y: f32) -> D2D_POINT_2F {

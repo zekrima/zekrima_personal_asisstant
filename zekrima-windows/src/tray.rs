@@ -10,6 +10,7 @@
 use std::cell::Cell;
 use std::mem::size_of;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use windows::core::{w, PCWSTR, Result};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HINSTANCE, HWND, LPARAM, POINT, WPARAM};
@@ -25,17 +26,31 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, LoadIconW, PostMessageW, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
     IDI_APPLICATION, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_CONTEXTMENU, WM_NULL, WM_RBUTTONUP, WM_USER, WNDCLASSW, WS_POPUP,
+    TPM_RIGHTBUTTON, WM_CONTEXTMENU, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_USER, WNDCLASSW,
+    WS_POPUP,
 };
 
 /// Pesan kustom dari tray window ke main window (membawa ID menu di `wparam`).
 pub const WM_TRAY_COMMAND: u32 = WM_USER + 100;
 
-/// ID menu: 1 = Run at Startup, 2 = Reset Position, 3 = Exit, 4 = Notification Settings.
+/// ID menu tray.
 pub const IDM_STARTUP: usize = 1;
 pub const IDM_RESET: usize = 2;
 pub const IDM_EXIT: usize = 3;
 pub const IDM_NOTIF_SETTINGS: usize = 4;
+pub const IDM_ASSISTANT_CONFIG: usize = 5;
+pub const IDM_TOGGLE_HIDE: usize = 6;
+pub const IDM_AUTO_HIDE: usize = 7;
+
+static TRAY_AUTO_HIDE_CHECKED: AtomicBool = AtomicBool::new(false);
+static TRAY_ISLAND_HIDDEN: AtomicBool = AtomicBool::new(false);
+static TRAY_HIDE_HOTKEY: AtomicU8 = AtomicU8::new(0);
+
+pub fn sync_tray_state(auto_hide: bool, island_hidden: bool, hide_hotkey_u8: u8) {
+    TRAY_AUTO_HIDE_CHECKED.store(auto_hide, Ordering::Relaxed);
+    TRAY_ISLAND_HIDDEN.store(island_hidden, Ordering::Relaxed);
+    TRAY_HIDE_HOTKEY.store(hide_hotkey_u8, Ordering::Relaxed);
+}
 
 const TRAY_CLASS_NAME: PCWSTR = w!("ZekrimaTrayWindow");
 const RUN_SUBKEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -63,6 +78,11 @@ unsafe extern "system" fn tray_wndproc(
             let event = lparam.0 as u32;
             if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
                 show_tray_menu(hwnd);
+            } else if event == WM_LBUTTONUP {
+                let app = APP_HWND.with(|slot| slot.get());
+                if !app.is_invalid() {
+                    let _ = PostMessageW(app, WM_TRAY_COMMAND, WPARAM(IDM_TOGGLE_HIDE), LPARAM(0));
+                }
             }
             windows::Win32::Foundation::LRESULT(0)
         }
@@ -82,11 +102,44 @@ unsafe fn show_tray_menu(hwnd: HWND) {
     } else {
         MF_UNCHECKED
     };
+    let hotkey_label = crate::services::config::HideHotkey::from_u8(
+        TRAY_HIDE_HOTKEY.load(Ordering::Relaxed),
+    )
+    .label();
+    let hide_wide = to_wide(&if TRAY_ISLAND_HIDDEN.load(Ordering::Relaxed) {
+        format!("Show Dynamic Island ({hotkey_label})")
+    } else {
+        format!("Hide Dynamic Island ({hotkey_label})")
+    });
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING,
+        IDM_TOGGLE_HIDE,
+        PCWSTR(hide_wide.as_ptr()),
+    );
+    let auto_hide_checked = if TRAY_AUTO_HIDE_CHECKED.load(Ordering::Relaxed) {
+        MF_CHECKED
+    } else {
+        MF_UNCHECKED
+    };
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING | auto_hide_checked,
+        IDM_AUTO_HIDE,
+        w!("Auto-Hide when Idle"),
+    );
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, w!(""));
     let _ = AppendMenuW(
         menu,
         MF_STRING | checked,
         IDM_STARTUP,
         w!("Run at Windows Startup"),
+    );
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING,
+        IDM_ASSISTANT_CONFIG,
+        w!("Assistant Config (API Keys)"),
     );
     let _ = AppendMenuW(menu, MF_STRING, IDM_NOTIF_SETTINGS, w!("Notification Settings"));
     let _ = AppendMenuW(menu, MF_STRING, IDM_RESET, w!("Reset Position"));

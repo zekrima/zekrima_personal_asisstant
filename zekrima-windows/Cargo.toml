@@ -1,8 +1,8 @@
 [package]
 name = "zekrima"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Zekrima - a native Windows dynamic island overlay"
+description = "Zekrima Assistant - native Windows Dynamic Island overlay with Zeki AI"
 publish = false
 
 [dependencies.windows]
@@ -27,6 +27,7 @@ features = [
     "Win32_Graphics_Imaging",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
+    "Win32_Networking_WinHttp",
     "Win32_Devices_Display",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
