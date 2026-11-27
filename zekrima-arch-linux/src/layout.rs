@@ -13,7 +13,7 @@ pub fn compute_ui_scale(mon_w: i32, mon_h: i32) -> f32 {
     let fit_w = (mon_w as f32 * 0.92) / CANVAS_WIDTH_LOGICAL;
     let fit_h = (mon_h as f32 * 0.72) / CANVAS_HEIGHT_LOGICAL;
     let cap = fit_w.min(fit_h);
-    let boost = if mon_w >= 3000 && mon_h >= 1600 {
+    let boost: f32 = if mon_w >= 3000 && mon_h >= 1600 {
         1.22
     } else if mon_w >= 2400 && mon_h >= 1300 {
         1.10
