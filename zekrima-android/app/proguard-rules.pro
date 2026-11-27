@@ -1,0 +1,2 @@
+-keep class io.zekrima.assistant.** { *; }
+-dontwarn org.json.**

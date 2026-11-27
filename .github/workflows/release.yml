@@ -92,9 +92,34 @@ jobs:
             zekrima-linux-x86_64.tar.gz
             zekrima-arch-cachyos-src.tar.gz
 
+  build-android:
+    name: Build Android APK (API 29-36)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+      - name: Make gradlew executable
+        working-directory: zekrima-android
+        run: chmod +x gradlew
+      - name: Run Android unit tests & release APK build
+        working-directory: zekrima-android
+        run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
+      - name: Stage Android APK
+        run: |
+          mkdir -p release-android
+          cp zekrima-android/app/build/outputs/apk/release/app-release.apk release-android/Zekrima-Android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: release-android/*
+
   publish:
     name: Publish GitHub Release
-    needs: [build-windows, build-arch-linux]
+    needs: [build-windows, build-arch-linux, build-android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -115,3 +140,4 @@ jobs:
             artifacts/zekrima-*.pkg.tar.zst
             artifacts/zekrima-linux-x86_64.tar.gz
             artifacts/zekrima-arch-cachyos-src.tar.gz
+            artifacts/Zekrima-Android.apk

@@ -18,6 +18,14 @@ zekrima-windows/dist-installer/
 # Arch Linux makepkg temporary outputs
 zekrima-arch-linux/pkg/
 
+# Android build artifacts & local SDK config
+zekrima-android/.gradle/
+zekrima-android/local.properties
+zekrima-android/build/
+zekrima-android/app/build/
+*.apk
+*.aab
+
 # Local reference repositories & scratch notes
 coucou-main/
 Dynamic-Island-for-Windows-main/

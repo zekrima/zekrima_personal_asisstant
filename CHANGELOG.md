@@ -2,6 +2,15 @@
 
 All notable changes to **Zekrima** will be documented in this file.
 
+## [Unreleased]
+
+### Added (Android Edition — `zekrima-android/`)
+- **Native Android Dynamic Island (`API 29–36` / Android 10+)**:
+  - Pure Kotlin + Android `Canvas` floating overlay (`IslandOverlayService`) with damped spring physics, **0.0% idle CPU** when tucked into the top edge after 10 s, **Quick Settings Tile**, and all 7 tabs (`Zeki`, `Live`, `Media`, `Timer`, `Clip`, `Sys`, `Notifs`).
+  - Full **Zeki** procedural mascot (7 states, poke sparks, music dance, audio-reactive Cicada headset, gentle nod, & `TakingNotes`), multi-provider BYOK AI Assistant with **live `/models` auto-detection**, Zero-Retention **Screen Vision** (`MediaProjection`), and real Android hardware tools (`AudioManager`, `Settings.System`, `PackageManager`, `NotificationListenerService`, `MediaSessionManager`).
+  - Full **Cicada Mode (Live Meeting Translator)** using Android 10+ **`AudioPlaybackCaptureConfiguration`** direct system audio loopback (+ automatic Speakerphone Mic fallback), pure-Kotlin `SpeechSegmenter` & `EchoFilter`, Click-Through **Live Subtitle Bar (`Pass` / `Unlock`)**, **Bidirectional Quick-Reply**, Custom Glossary, Auto-Summary, Live Q&A, and Markdown export.
+  - Added `build-android` CI & Release workflow jobs to build, unit-test, and attach `Zekrima-Android.apk`.
+
 ## [0.4.0] - 2026-11-27
 
 ### Added (Cicada Mode — Live Meeting Translator on Windows & Arch Linux / CachyOS)
