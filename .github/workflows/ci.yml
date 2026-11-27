@@ -68,13 +68,17 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-      - uses: android-actions/setup-android@v3
-      - name: Make gradlew executable
-        working-directory: zekrima-android
-        run: chmod +x gradlew
+      - name: Ensure Android SDK 36 & accept licenses
+        run: |
+          SDK_MGR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDK_MGR" --licenses > /dev/null || true
+          "$SDK_MGR" "platforms;android-36" "build-tools;36.0.0"
       - name: Run Android unit tests & release APK build
         working-directory: zekrima-android
-        run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
+        run: |
+          sed -i 's/\r$//' gradlew
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest assembleRelease --no-daemon
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4
         with:
