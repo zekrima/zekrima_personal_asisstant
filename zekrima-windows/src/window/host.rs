@@ -12,12 +12,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, CreateWindowExW, GetSystemMetrics, GetWindowLongPtrW, RegisterClassW,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, ASFW_ANY, CS_DBLCLKS,
-    CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, HWND_TOPMOST, SM_CXSCREEN, SWP_FRAMECHANGED,
+    CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW,
     WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-use crate::layout::canvas_size_px;
+use crate::layout::{canvas_size_px, effective_dpi};
 
 pub struct HostWindow {
     hwnd: HWND,
@@ -45,9 +45,11 @@ impl HostWindow {
             return Err(Error::from_win32());
         }
 
-        let dpi = GetDpiForSystem().max(96);
-        let (width_px, height_px) = canvas_size_px(dpi);
+        let raw_dpi = GetDpiForSystem().max(96);
         let screen_width = GetSystemMetrics(SM_CXSCREEN);
+        let screen_height = GetSystemMetrics(SM_CYSCREEN);
+        let dpi = effective_dpi(raw_dpi, screen_width, screen_height);
+        let (width_px, height_px) = canvas_size_px(dpi);
         let x = (screen_width - width_px) / 2;
 
         let hwnd = CreateWindowExW(
@@ -65,7 +67,8 @@ impl HostWindow {
             None,
         )?;
 
-        let actual_dpi = GetDpiForWindow(hwnd).max(96);
+        let actual_raw_dpi = GetDpiForWindow(hwnd).max(96);
+        let actual_dpi = effective_dpi(actual_raw_dpi, screen_width, screen_height);
         let mut host = Self {
             hwnd,
             dpi,
@@ -74,7 +77,7 @@ impl HostWindow {
         };
 
         if actual_dpi != dpi {
-            host.apply_dpi(actual_dpi)?;
+            host.apply_dpi(actual_raw_dpi)?;
         }
 
         Ok(host)
@@ -96,11 +99,12 @@ impl HostWindow {
         self.height_px
     }
 
-    /// Applies a new DPI, resizes the canvas and re-centers it at `y = 0`.
-    pub unsafe fn apply_dpi(&mut self, dpi: u32) -> Result<()> {
-        let dpi = dpi.max(96);
-        let (width_px, height_px) = canvas_size_px(dpi);
+    /// Applies a new raw DPI + current monitor resolution, resizes the canvas and re-centers at `y = 0`.
+    pub unsafe fn apply_dpi(&mut self, raw_dpi: u32) -> Result<()> {
         let screen_width = GetSystemMetrics(SM_CXSCREEN);
+        let screen_height = GetSystemMetrics(SM_CYSCREEN);
+        let dpi = effective_dpi(raw_dpi.max(96), screen_width, screen_height);
+        let (width_px, height_px) = canvas_size_px(dpi);
         let x = (screen_width - width_px) / 2;
 
         SetWindowPos(
@@ -117,6 +121,12 @@ impl HostWindow {
         self.width_px = width_px as u32;
         self.height_px = height_px as u32;
         Ok(())
+    }
+
+    /// Re-queries active monitor resolution & DPI (called on `WM_DISPLAYCHANGE` or Reset Position).
+    pub unsafe fn refresh_for_display(&mut self) -> Result<()> {
+        let raw_dpi = GetDpiForWindow(self.hwnd).max(96);
+        self.apply_dpi(raw_dpi)
     }
 
     /// Shows the window without activating it or stealing keyboard focus.
@@ -164,6 +174,7 @@ impl HostWindow {
     }
 
     /// Re-centers the canvas at the top edge of the primary monitor.
+    #[allow(dead_code)]
     pub unsafe fn recenter(&self) -> Result<()> {
         let screen_width = GetSystemMetrics(SM_CXSCREEN);
         let x = (screen_width - self.width_px as i32) / 2;

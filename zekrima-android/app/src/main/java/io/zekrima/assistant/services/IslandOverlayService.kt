@@ -8,6 +8,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -93,6 +94,7 @@ class IslandOverlayService : Service() {
     private var animating = false
     private var lastFrameNanos = 0L
     private var maxWidthDp = 360f
+    private var maxHeightDp = 420f
 
     private val stateListener: () -> Unit = {
         handler.post { onExternalStateChanged() }
@@ -183,8 +185,7 @@ class IslandOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        maxWidthDp = ((resources.displayMetrics.widthPixels / resources.displayMetrics.density) - 12f)
-            .coerceIn(300f, 440f)
+        updateScreenLimits()
 
         assistant = AssistantService(this)
         cicada = CicadaService(this, assistant)
@@ -206,6 +207,40 @@ class IslandOverlayService : Service() {
         ZekrimaApp.notifyStateChanged()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateScreenLimits()
+        if (::canvasView.isInitialized && ::chatBar.isInitialized) {
+            val d = resources.displayMetrics.density
+            canvasView.layoutParams = canvasView.layoutParams.apply {
+                width = (maxWidthDp * d).toInt()
+            }
+            chatBar.layoutParams = chatBar.layoutParams.apply {
+                width = ((maxWidthDp - 12f) * d).toInt()
+            }
+            applyPillMode()
+            updateWindowBounds()
+            renderNow(0.016f)
+            ensureAnimating()
+        }
+    }
+
+    private fun updateScreenLimits() {
+        val dm = resources.displayMetrics
+        val density = dm.density.coerceAtLeast(1f)
+        val (wPx, hPx) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val b = wm.currentWindowMetrics.bounds
+            b.width() to b.height()
+        } else {
+            dm.widthPixels to dm.heightPixels
+        }
+        val screenWidthDp = wPx / density
+        val screenHeightDp = hPx / density
+        // Dynamic responsive bounds: full width minus margin on phones, clean centered cap on tablets/landscape
+        maxWidthDp = (screenWidthDp - 12f).coerceIn(280f, 480f)
+        maxHeightDp = (screenHeightDp * 0.72f).coerceIn(180f, 440f)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
@@ -223,7 +258,7 @@ class IslandOverlayService : Service() {
                 revealFromAutoHide()
                 LiveNotificationStore.pushToast(
                     "Zekrima",
-                    "Dynamic Island v0.4.0 Aktif!",
+                    "Dynamic Island v0.5.0 Aktif!",
                     "Zeki & Cicada Mode siap digunakan di Android."
                 )
             }
@@ -716,7 +751,7 @@ class IslandOverlayService : Service() {
             LiveNotificationStore.unreadCount() > 0 -> PillMode.COLLAPSED_WITH_BADGE
             else -> PillMode.COLLAPSED
         }
-        springs.setMode(mode, maxWidthDp)
+        springs.setMode(mode, maxWidthDp, maxHeightDp)
     }
 
     private fun syncZekiLiveLevels(dt: Float) {

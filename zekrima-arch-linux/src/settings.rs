@@ -44,11 +44,27 @@ where
             .unwrap_or(0),
     ));
 
+    let (dyn_w, dyn_h) = gtk4::gdk::Display::default()
+        .and_then(|d| {
+            let mons = d.monitors();
+            mons.item(0)
+                .and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok())
+                .map(|m| {
+                    let g = m.geometry();
+                    let w = ((g.width() as f32 * 0.36).clamp(420.0, 620.0) as i32)
+                        .min((g.width() - 32).max(360));
+                    let h = ((g.height() as f32 * 0.80).clamp(480.0, 820.0) as i32)
+                        .min((g.height() - 64).max(400));
+                    (w, h)
+                })
+        })
+        .unwrap_or((520, 680));
+
     let win = Window::builder()
         .application(app)
         .title("Zekrima Assistant — Settings (BYOK)")
-        .default_width(520)
-        .default_height(680)
+        .default_width(dyn_w)
+        .default_height(dyn_h)
         .resizable(true)
         .build();
 

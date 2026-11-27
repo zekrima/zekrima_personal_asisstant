@@ -46,7 +46,7 @@ data class AssistantSnapshot(
     val messages: List<ChatMessage> = emptyList(),
     val reply: String = "",
     val error: String? = null,
-    val screenEnabled: Boolean = true,
+    val screenEnabled: Boolean = false,
     val hasApiKey: Boolean = false
 ) {
     fun hasConversationView(): Boolean =

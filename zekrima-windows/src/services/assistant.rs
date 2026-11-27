@@ -115,7 +115,7 @@ impl Default for AssistantSnapshot {
             error: None,
             provider_label: "Gemini".to_string(),
             has_config_key: false,
-            screen_access_enabled: true,
+            screen_access_enabled: false,
             screen_capturing_now: false,
             last_tool_badges: Vec::new(),
         }
@@ -190,7 +190,7 @@ impl AssistantService {
             error: None,
             provider_label: provider_badge(&cfg),
             has_config_key: cfg.has_any_key(),
-            screen_access_enabled: true,
+            screen_access_enabled: false,
             screen_capturing_now: false,
             last_tool_badges: Vec::new(),
         };
@@ -237,12 +237,12 @@ impl AssistantService {
             .snapshot
             .lock()
             .map(|s| s.screen_access_enabled)
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 
     /// Toggles Screen Vision / Incognito privacy mode. Returns the new state (`true` = Screen ON).
     pub fn toggle_screen_access(&self) -> bool {
-        let mut enabled = true;
+        let mut enabled = false;
         self.shared.update_snapshot(|snap| {
             snap.screen_access_enabled = !snap.screen_access_enabled;
             if !snap.screen_access_enabled {

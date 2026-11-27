@@ -126,7 +126,7 @@ data class AssistantConfig(
     val language: String = "id",
     val systemPrompt: String =
         "Kamu adalah Zeki, asisten AI personal di dalam Dynamic Island Android yang cerdas, ringkas, ramah, dan membantu. Jawab dalam bahasa user secara padat dan jelas.",
-    val screenVisionEnabled: Boolean = true,
+    val screenVisionEnabled: Boolean = false,
     val screenHighRes: Boolean = false,
     val ttsEnabled: Boolean = false,
     val ttsVoice: String = "Kore",

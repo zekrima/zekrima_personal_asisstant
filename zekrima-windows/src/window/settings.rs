@@ -11,26 +11,32 @@ use std::sync::Mutex;
 use std::thread;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontW, CreateSolidBrush, DeleteObject, GetStockObject, SetBkColor, SetBkMode,
-    SetTextColor, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DEFAULT_QUALITY,
-    FF_SWISS, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS,
-    TRANSPARENT, WHITE_BRUSH,
+    SetTextColor, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DEFAULT_QUALITY, FF_SWISS,
+    FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, TRANSPARENT,
+    WHITE_BRUSH,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::SetScrollInfo;
 use windows::Win32::UI::HiDpi::GetDpiForSystem;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW,
-    IsWindow, KillTimer, LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowTextW, ShowWindow,
-    TranslateMessage, ASFW_ANY, CS_HREDRAW, CS_VREDRAW, HMENU, IDC_ARROW, IDI_APPLICATION,
-    MB_ICONERROR, MB_OK, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_SETFONT, WM_TIMER,
-    WM_USER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_MINIMIZEBOX,
-    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    AdjustWindowRectEx, AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    DispatchMessageW, GetClientRect, GetMessageW, GetScrollInfo, GetSystemMetrics,
+    GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsWindow, KillTimer, LoadCursorW,
+    LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, ScrollWindowEx,
+    SendMessageW, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow,
+    SystemParametersInfoW, TranslateMessage, ASFW_ANY, CS_HREDRAW, CS_VREDRAW, HMENU, IDC_ARROW,
+    IDI_APPLICATION, MB_ICONERROR, MB_OK, MSG, SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN,
+    SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT, SCROLLINFO, SIF_PAGE, SIF_POS,
+    SIF_RANGE, SIF_TRACKPOS, SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOZORDER, SW_ERASE,
+    SW_INVALIDATE, SW_RESTORE, SW_SCROLLCHILDREN, SW_SHOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY,
+    WM_MOUSEWHEEL, WM_SETFONT, WM_SIZE, WM_TIMER, WM_USER, WM_VSCROLL, WNDCLASSW, WS_CAPTION,
+    WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU,
+    WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::services::assistant;
@@ -151,6 +157,9 @@ struct SettingsState {
     hwnd_cicada_target: HWND,
     hwnd_cicada_reply: HWND,
     hwnd_cicada_glossary: HWND,
+    dpi: i32,
+    content_h: i32,
+    scroll_y: i32,
 }
 
 impl Drop for SettingsState {
@@ -289,15 +298,43 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
     // Ignore ERROR_CLASS_ALREADY_EXISTS on subsequent opens
     let _ = RegisterClassW(&wc);
 
-    let dpi = GetDpiForSystem().max(96) as i32;
-    let win_w = scale(530, dpi);
-    let screen_w = GetSystemMetrics(SM_CXSCREEN);
-    let screen_h = GetSystemMetrics(SM_CYSCREEN);
-    let win_h = scale(876, dpi).min(screen_h - scale(36, dpi));
-    let win_x = (screen_w - win_w) / 2;
-    let win_y = ((screen_h - win_h) / 2).max(8);
+    let raw_dpi = GetDpiForSystem().max(96) as i32;
+    let mut work = RECT::default();
+    let has_work = SystemParametersInfoW(
+        SPI_GETWORKAREA,
+        0,
+        Some(&mut work as *mut RECT as *mut c_void),
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+    )
+    .is_ok();
+    let (work_left, work_top, work_w, work_h) = if has_work && work.right > work.left && work.bottom > work.top {
+        (work.left, work.top, work.right - work.left, work.bottom - work.top)
+    } else {
+        (0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN))
+    };
 
-    let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    // Scale DPI slightly down on very compact screens so form controls remain balanced
+    let dpi = if work_h < scale(760, raw_dpi) {
+        ((raw_dpi as f32 * 0.92).round() as i32).max(88)
+    } else {
+        raw_dpi
+    };
+
+    // Dynamic responsive window width & height proportional to active monitor work area
+    let win_w = ((work_w * 42 / 100).clamp(scale(470, dpi), scale(640, dpi)))
+        .min((work_w - scale(24, dpi)).max(scale(360, dpi)));
+    let initial_win_h = ((work_h * 88 / 100).clamp(scale(440, dpi), scale(940, dpi)))
+        .min((work_h - scale(16, dpi)).max(scale(360, dpi)));
+    let win_x = work_left + (work_w - win_w) / 2;
+    let win_y = work_top + ((work_h - initial_win_h) / 2).max(4);
+
+    let style = WS_CAPTION
+        | WS_SYSMENU
+        | WS_MINIMIZEBOX
+        | WS_MAXIMIZEBOX
+        | WS_THICKFRAME
+        | WS_VSCROLL
+        | WS_CLIPCHILDREN;
     let Ok(hwnd) = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         SETTINGS_CLASS,
@@ -306,7 +343,7 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
         win_x,
         win_y,
         win_w,
-        win_h,
+        initial_win_h,
         None,
         None,
         instance,
@@ -325,8 +362,10 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
     let cfg = AssistantConfig::load();
     let active_provider = cfg.llm_provider;
 
-    let pad = scale(20, dpi);
-    let full_w = scale(464, dpi);
+    let mut client_rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut client_rc);
+    let pad = scale(18, dpi);
+    let full_w = (client_rc.right - pad * 2).max(scale(320, dpi));
     let lbl_h = scale(18, dpi);
     let ctl_h = scale(26, dpi);
     let combo_drop_h = scale(220, dpi);
@@ -943,6 +982,23 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
     .unwrap_or_default();
     apply_font(save_btn, font_bold);
 
+    let content_h = y + btn_h + pad;
+
+    // Fit outer window tightly to content when screen is tall enough, otherwise clamp to 90% work area & enable smooth scrolling
+    let mut ideal_rc = RECT {
+        left: 0,
+        top: 0,
+        right: full_w + pad * 2,
+        bottom: content_h,
+    };
+    let _ = AdjustWindowRectEx(&mut ideal_rc, style, false, WINDOW_EX_STYLE(0));
+    let ideal_h = ideal_rc.bottom - ideal_rc.top;
+    let max_h = ((work_h * 90 / 100).max(scale(420, dpi))).min(work_h - scale(12, dpi));
+    let final_h = ideal_h.min(max_h);
+    let final_x = work_left + (work_w - win_w) / 2;
+    let final_y = work_top + ((work_h - final_h) / 2).max(4);
+    let _ = SetWindowPos(hwnd, None, final_x, final_y, win_w, final_h, SWP_NOZORDER);
+
     let mut state = SettingsState {
         main_hwnd: main_hwnd_raw,
         cfg,
@@ -972,7 +1028,11 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
         hwnd_cicada_target,
         hwnd_cicada_reply,
         hwnd_cicada_glossary,
+        dpi,
+        content_h,
+        scroll_y: 0,
     };
+    update_settings_scroll(hwnd, &mut state);
     populate_provider_fields(&mut state, active_provider);
     trigger_model_fetch(hwnd, &state, false);
 
@@ -1256,6 +1316,75 @@ unsafe fn save_and_close(hwnd: HWND, st: &mut SettingsState) {
     }
 }
 
+unsafe fn update_settings_scroll(hwnd: HWND, st: &mut SettingsState) {
+    let mut rc = RECT::default();
+    if GetClientRect(hwnd, &mut rc).is_err() {
+        return;
+    }
+    let page = (rc.bottom - rc.top).max(1);
+    let max_scroll = (st.content_h - page).max(0);
+    let clamped = st.scroll_y.clamp(0, max_scroll);
+    if clamped != st.scroll_y {
+        let dy = st.scroll_y - clamped;
+        st.scroll_y = clamped;
+        let _ = ScrollWindowEx(
+            hwnd,
+            0,
+            dy,
+            None,
+            None,
+            None,
+            None,
+            SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE,
+        );
+    }
+    let si = SCROLLINFO {
+        cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+        nMin: 0,
+        nMax: st.content_h.max(page),
+        nPage: page as u32,
+        nPos: st.scroll_y,
+        nTrackPos: 0,
+    };
+    SetScrollInfo(hwnd, SB_VERT, &si, true);
+}
+
+unsafe fn scroll_settings_to(hwnd: HWND, st: &mut SettingsState, target: i32) {
+    let mut rc = RECT::default();
+    if GetClientRect(hwnd, &mut rc).is_err() {
+        return;
+    }
+    let page = (rc.bottom - rc.top).max(1);
+    let max_scroll = (st.content_h - page).max(0);
+    let next = target.clamp(0, max_scroll);
+    if next == st.scroll_y {
+        return;
+    }
+    let dy = st.scroll_y - next;
+    st.scroll_y = next;
+    let _ = ScrollWindowEx(
+        hwnd,
+        0,
+        dy,
+        None,
+        None,
+        None,
+        None,
+        SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE,
+    );
+    let si = SCROLLINFO {
+        cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+        fMask: SIF_POS,
+        nMin: 0,
+        nMax: 0,
+        nPage: 0,
+        nPos: st.scroll_y,
+        nTrackPos: 0,
+    };
+    SetScrollInfo(hwnd, SB_VERT, &si, true);
+}
+
 unsafe extern "system" fn settings_wndproc(
     hwnd: HWND,
     message: u32,
@@ -1387,6 +1516,62 @@ unsafe extern "system" fn settings_wndproc(
                 if let Ok(mut guard) = slot.try_borrow_mut() {
                     if let Some(st) = guard.as_mut() {
                         apply_fetched_models(st);
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_SIZE => {
+            STATE.with(|slot| {
+                if let Ok(mut guard) = slot.try_borrow_mut() {
+                    if let Some(st) = guard.as_mut() {
+                        update_settings_scroll(hwnd, st);
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_VSCROLL => {
+            let req = (wparam.0 & 0xFFFF) as i32;
+            STATE.with(|slot| {
+                if let Ok(mut guard) = slot.try_borrow_mut() {
+                    if let Some(st) = guard.as_mut() {
+                        let line = scale(32, st.dpi);
+                        let mut rc = RECT::default();
+                        let _ = GetClientRect(hwnd, &mut rc);
+                        let page = (rc.bottom - rc.top - line).max(line);
+                        let target = match req {
+                            x if x == SB_LINEUP.0 => st.scroll_y - line,
+                            x if x == SB_LINEDOWN.0 => st.scroll_y + line,
+                            x if x == SB_PAGEUP.0 => st.scroll_y - page,
+                            x if x == SB_PAGEDOWN.0 => st.scroll_y + page,
+                            x if x == SB_TOP.0 => 0,
+                            x if x == SB_BOTTOM.0 => st.content_h,
+                            x if x == SB_THUMBTRACK.0 || x == SB_THUMBPOSITION.0 => {
+                                let mut si = SCROLLINFO {
+                                    cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+                                    fMask: SIF_TRACKPOS,
+                                    ..Default::default()
+                                };
+                                let _ = GetScrollInfo(hwnd, SB_VERT, &mut si);
+                                si.nTrackPos
+                            }
+                            _ => st.scroll_y,
+                        };
+                        scroll_settings_to(hwnd, st, target);
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam.0 >> 16) as u16 as i16) as i32;
+            STATE.with(|slot| {
+                if let Ok(mut guard) = slot.try_borrow_mut() {
+                    if let Some(st) = guard.as_mut() {
+                        let step = scale(48, st.dpi);
+                        let next = st.scroll_y - (delta / 120) * step;
+                        scroll_settings_to(hwnd, st, next);
                     }
                 }
             });

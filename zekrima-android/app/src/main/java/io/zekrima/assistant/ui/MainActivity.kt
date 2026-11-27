@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -50,6 +51,7 @@ class MainActivity : Activity() {
     private var suppressEdit = false
     private var debounceRunnable: Runnable? = null
 
+    private lateinit var contentColumn: LinearLayout
     private lateinit var overlayBtn: Button
     private lateinit var statusSubtitle: TextView
     private lateinit var permOverlayBtn: Button
@@ -102,15 +104,48 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyResponsiveContainerLayout()
+    }
+
+    private fun applyResponsiveContainerLayout() {
+        if (!::contentColumn.isInitialized) return
+        val dm = resources.displayMetrics
+        val screenWidthDp = dm.widthPixels / dm.density.coerceAtLeast(1f)
+        val horizPad = when {
+            screenWidthDp < 360f -> dp(12)
+            screenWidthDp >= 640f -> dp(24)
+            else -> dp(18)
+        }
+        val targetWidth = if (screenWidthDp >= 600f) dp(580) else LinearLayout.LayoutParams.MATCH_PARENT
+        val lp = (contentColumn.layoutParams as? android.widget.FrameLayout.LayoutParams)
+            ?: android.widget.FrameLayout.LayoutParams(targetWidth, LinearLayout.LayoutParams.WRAP_CONTENT)
+        lp.width = targetWidth
+        lp.gravity = Gravity.CENTER_HORIZONTAL
+        contentColumn.layoutParams = lp
+        contentColumn.setPadding(horizPad, dp(20), horizPad, dp(36))
+    }
+
     private fun buildUi(): View {
         val scroll = ScrollView(this).apply {
             setBackgroundColor(Color.rgb(10, 10, 14))
+            isFillViewport = true
+            fitsSystemWindows = true
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(22), dp(18), dp(36))
         }
-        scroll.addView(root)
+        contentColumn = root
+        scroll.addView(
+            root,
+            android.widget.FrameLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER_HORIZONTAL
+            )
+        )
+        applyResponsiveContainerLayout()
 
         // Hero Header
         root.addView(TextView(this).apply {
@@ -120,7 +155,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
         })
         statusSubtitle = TextView(this).apply {
-            text = "v0.4.0 • AI Personal Assistant & Cicada Live Meeting Translator"
+            text = "v0.5.0 • AI Personal Assistant & Cicada Live Meeting Translator"
             textSize = 12.5f
             setTextColor(Color.rgb(148, 163, 184))
             setPadding(0, dp(4), 0, dp(16))

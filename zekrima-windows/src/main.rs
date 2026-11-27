@@ -40,7 +40,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, DEVICE_NOTIFY_WINDOW_HANDLE, HC_ACTION,
     HHOOK, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MA_ACTIVATE, MA_NOACTIVATE, MB_ICONERROR, MB_OK,
     MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, PBT_POWERSETTINGCHANGE, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WH_KEYBOARD_LL, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_INPUT,
+    TPM_RIGHTBUTTON, WH_KEYBOARD_LL, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_DPICHANGED, WM_INPUT,
     WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCHITTEST, WM_NULL, WM_POWERBROADCAST,
     WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_USER,
@@ -1645,7 +1646,7 @@ impl App {
                 self.notifications.open_windows_settings();
             }
             IDM_RESET => {
-                let _ = self.host.recenter();
+                let _ = self.on_display_changed();
             }
             IDM_EXIT => {
                 PostMessageW(self.host.hwnd(), WM_CLOSE, WPARAM(0), LPARAM(0))?;
@@ -1658,6 +1659,16 @@ impl App {
 
     unsafe fn on_dpi_changed(&mut self, dpi: u32) -> Result<()> {
         self.host.apply_dpi(dpi)?;
+        self.renderer.resize(
+            self.host.width_px(),
+            self.host.height_px(),
+            self.host.dpi() as f32,
+        )?;
+        self.render()
+    }
+
+    unsafe fn on_display_changed(&mut self) -> Result<()> {
+        self.host.refresh_for_display()?;
         self.renderer.resize(
             self.host.width_px(),
             self.host.height_px(),
@@ -1929,7 +1940,7 @@ unsafe extern "system" fn wndproc(
                         Some(true)
                     }
                     IDM_RESET => {
-                        let _ = app.host.recenter();
+                        let _ = app.on_display_changed();
                         Some(true)
                     }
                     _ => None,
@@ -1952,6 +1963,12 @@ unsafe extern "system" fn wndproc(
                 }
                 None => DefWindowProcW(hwnd, message, wparam, lparam),
             }
+        }
+        WM_DISPLAYCHANGE => {
+            let _ = with_app_mut(|app| {
+                let _ = app.on_display_changed();
+            });
+            LRESULT(0)
         }
         WM_CLOSE => {
             let _ = DestroyWindow(hwnd);

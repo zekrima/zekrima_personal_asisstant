@@ -48,6 +48,7 @@ const ACCENT_RED: (f64, f64, f64) = (235.0 / 255.0, 0.0, 40.0 / 255.0);
 const BADGE_RED: (f64, f64, f64) = (239.0 / 255.0, 68.0 / 255.0, 68.0 / 255.0);
 
 pub struct Frame<'a> {
+    pub ui_scale: f32,
     pub width: f32,
     pub height: f32,
     pub radius: f32,
@@ -127,6 +128,9 @@ impl CairoRenderer {
         cr.set_operator(cairo::Operator::Clear);
         let _ = cr.paint();
         cr.set_operator(cairo::Operator::Over);
+
+        let scale = frame.ui_scale.clamp(0.72, 1.25) as f64;
+        cr.scale(scale, scale);
 
         let width = frame.width.clamp(1.0, CANVAS_WIDTH_LOGICAL) as f64;
         let height = frame.height.clamp(1.0, CANVAS_HEIGHT_LOGICAL) as f64;

@@ -34,7 +34,9 @@ use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, CssProvider, DrawingArea, PopoverMenu};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
-use crate::layout::{CANVAS_HEIGHT_LOGICAL, CANVAS_WIDTH_LOGICAL, PILL_TOP_LOGICAL};
+use crate::layout::{
+    compute_ui_scale, CANVAS_HEIGHT_LOGICAL, CANVAS_WIDTH_LOGICAL, PILL_TOP_LOGICAL,
+};
 use crate::render::cairo_ui::{CairoRenderer, Frame};
 use crate::render::spring::{PillMode, PillSprings};
 use crate::render::widgets::{self, ExpandedTab, HitContext, HitTarget};
@@ -105,6 +107,7 @@ struct AppState {
     hide_hotkey: HideHotkey,
     last_clock_minute: (u32, u32),
     last_input_rect: Option<(i32, i32, i32, i32)>,
+    ui_scale: f32,
     expanded: bool,
     expanded_tab: ExpandedTab,
     hovered: bool,
@@ -233,7 +236,8 @@ impl AppState {
     }
 
     fn update_input_region(&mut self) {
-        let rect_tuple = if self.manual_hidden {
+        let sc = self.ui_scale.clamp(0.72, 1.25);
+        let raw_tuple = if self.manual_hidden {
             (0, 0, 1, 1)
         } else if self.auto_hidden {
             // Generous 12px top-center reveal strip so hovering top-center wakes the island
@@ -253,6 +257,17 @@ impl AppState {
                 0,
                 w.ceil() as i32,
                 (top + h).ceil() as i32,
+            )
+        };
+
+        let rect_tuple = if self.manual_hidden {
+            raw_tuple
+        } else {
+            (
+                (raw_tuple.0 as f32 * sc).floor() as i32,
+                (raw_tuple.1 as f32 * sc).floor() as i32,
+                (raw_tuple.2 as f32 * sc).ceil().max(1.0) as i32,
+                (raw_tuple.3 as f32 * sc).ceil().max(1.0) as i32,
             )
         };
 
@@ -793,11 +808,25 @@ fn build_ui(app: &Application) {
         );
     }
 
+    let initial_ui_scale = gdk::Display::default()
+        .and_then(|d| {
+            d.monitors()
+                .item(0)
+                .and_then(|o| o.downcast::<gdk::Monitor>().ok())
+                .map(|m| {
+                    let g = m.geometry();
+                    compute_ui_scale(g.width(), g.height())
+                })
+        })
+        .unwrap_or(1.0);
+    let win_w = (CANVAS_WIDTH_LOGICAL * initial_ui_scale).round() as i32;
+    let win_h = (CANVAS_HEIGHT_LOGICAL * initial_ui_scale).round() as i32;
+
     let window = ApplicationWindow::builder()
         .application(app)
         .title("Zekrima")
-        .default_width(CANVAS_WIDTH_LOGICAL as i32)
-        .default_height(CANVAS_HEIGHT_LOGICAL as i32)
+        .default_width(win_w)
+        .default_height(win_h)
         .decorated(false)
         .resizable(false)
         .build();
@@ -813,8 +842,8 @@ fn build_ui(app: &Application) {
     }
 
     let area = DrawingArea::new();
-    area.set_content_width(CANVAS_WIDTH_LOGICAL as i32);
-    area.set_content_height(CANVAS_HEIGHT_LOGICAL as i32);
+    area.set_content_width(win_w);
+    area.set_content_height(win_h);
     area.set_focusable(true);
     window.set_child(Some(&area));
 
@@ -962,6 +991,7 @@ fn build_ui(app: &Application) {
         hide_hotkey: cfg.hide_hotkey,
         last_clock_minute: (now_local.hour(), now_local.minute()),
         last_input_rect: None,
+        ui_scale: initial_ui_scale,
         expanded: false,
         expanded_tab: ExpandedTab::Zeki,
         hovered: false,
@@ -1047,8 +1077,10 @@ fn build_ui(app: &Application) {
                 st.chat_scroll_offset
             };
 
+            let ui_scale = st.ui_scale;
             let app_ref = &mut *st;
             let frame = Frame {
+                ui_scale,
                 width,
                 height,
                 radius,
@@ -1118,7 +1150,8 @@ fn build_ui(app: &Application) {
                         st.set_expanded(true);
                     }
                 }
-                update_hover_target(&mut st, x as f32, y as f32);
+                let sc = st.ui_scale.clamp(0.72, 1.25);
+                update_hover_target(&mut st, x as f32 / sc, y as f32 / sc);
             }
             ensure_anim_timer(&st_rc);
         });
@@ -1128,7 +1161,8 @@ fn build_ui(app: &Application) {
         motion.connect_motion(move |_, x, y| {
             let mut st = st_rc.borrow_mut();
             st.last_visible_activity = Instant::now();
-            if update_hover_target(&mut st, x as f32, y as f32) && st.anim_timer_id.is_none() {
+            let sc = st.ui_scale.clamp(0.72, 1.25);
+            if update_hover_target(&mut st, x as f32 / sc, y as f32 / sc) && st.anim_timer_id.is_none() {
                 st.area.queue_draw();
             }
         });
@@ -1279,9 +1313,10 @@ fn build_ui(app: &Application) {
             {
                 let mut st = st_rc.borrow_mut();
                 st.reveal_from_auto_hide();
+                let sc = st.ui_scale.clamp(0.72, 1.25);
                 let (left, top, _, _) = st.pill_origin();
-                let lx = x as f32 - left;
-                let ly = y as f32 - top;
+                let lx = (x as f32 / sc) - left;
+                let ly = (y as f32 / sc) - top;
                 let target = {
                     let ctx = st.hit_context();
                     widgets::hit_target_at(lx, ly, &ctx)

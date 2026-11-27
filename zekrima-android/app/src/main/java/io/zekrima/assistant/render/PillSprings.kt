@@ -92,8 +92,8 @@ class PillSprings {
     val height = PillGeometry.Spring(PillGeometry.COLLAPSED_HEIGHT)
     val radius = PillGeometry.Spring(PillGeometry.COLLAPSED_RADIUS)
 
-    fun setMode(mode: PillMode, maxWidthDp: Float = 360f): Boolean {
-        val (rawW, h, r) = when (mode) {
+    fun setMode(mode: PillMode, maxWidthDp: Float = 360f, maxHeightDp: Float = 420f): Boolean {
+        val (rawW, rawH, r) = when (mode) {
             PillMode.AUTO_HIDDEN -> Triple(
                 PillGeometry.AUTO_HIDDEN_WIDTH,
                 PillGeometry.AUTO_HIDDEN_HEIGHT,
@@ -141,9 +141,10 @@ class PillSprings {
             )
         }
         val clampedW = rawW.coerceAtMost(maxWidthDp)
+        val clampedH = if (mode == PillMode.AUTO_HIDDEN) rawH else rawH.coerceAtMost(maxHeightDp)
         val wChanged = width.setTarget(clampedW)
-        val hChanged = height.setTarget(h)
-        val rChanged = radius.setTarget(r)
+        val hChanged = height.setTarget(clampedH)
+        val rChanged = radius.setTarget(r.coerceAtMost(minOf(clampedW, clampedH) / 2f))
         return wChanged || hChanged || rChanged
     }
 

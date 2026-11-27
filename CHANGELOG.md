@@ -2,7 +2,7 @@
 
 All notable changes to **Zekrima** will be documented in this file.
 
-## [Unreleased]
+## [0.5.0] - 2026-11-27
 
 ### Added (Android Edition — `zekrima-android/`)
 - **Native Android Dynamic Island (`API 29–36` / Android 10+)**:
@@ -10,6 +10,12 @@ All notable changes to **Zekrima** will be documented in this file.
   - Full **Zeki** procedural mascot (7 states, poke sparks, music dance, audio-reactive Cicada headset, gentle nod, & `TakingNotes`), multi-provider BYOK AI Assistant with **live `/models` auto-detection**, Zero-Retention **Screen Vision** (`MediaProjection`), and real Android hardware tools (`AudioManager`, `Settings.System`, `PackageManager`, `NotificationListenerService`, `MediaSessionManager`).
   - Full **Cicada Mode (Live Meeting Translator)** using Android 10+ **`AudioPlaybackCaptureConfiguration`** direct system audio loopback (+ automatic Speakerphone Mic fallback), pure-Kotlin `SpeechSegmenter` & `EchoFilter`, Click-Through **Live Subtitle Bar (`Pass` / `Unlock`)**, **Bidirectional Quick-Reply**, Custom Glossary, Auto-Summary, Live Q&A, and Markdown export.
   - Added `build-android` CI & Release workflow jobs to build, unit-test, and attach `Zekrima-Android.apk`.
+- **Dynamic Resolution-Aware Scaling & Responsive Settings (Windows, Arch Linux & Android)**:
+  - **Windows**: Added monitor-resolution + DPI-aware `effective_dpi()` scaling (`WM_DISPLAYCHANGE` + `WM_DPICHANGED`) for the Dynamic Island, and upgraded the Win32 Settings window to dynamically size against the monitor work area (`SPI_GETWORKAREA`) with resizing (`WS_THICKFRAME`) and smooth mouse-wheel/vertical scrollbar scrolling so controls and `Save & Apply` never clip on compact or high-DPI screens.
+  - **Arch Linux / CachyOS**: Added `compute_ui_scale()` from active `gdk::Monitor::geometry()` scaling Cairo rendering, canvas, input regions, and pointer coordinates, plus dynamic monitor-proportioned GTK4 Settings window sizing.
+  - **Android**: Added live `onConfigurationChanged` orientation/foldable/tablet reflow to `IslandOverlayService` (`maxWidthDp` & `maxHeightDp`) and centered responsive container layout + `fitsSystemWindows` to `MainActivity` Settings.
+- **Privacy-First Default (`Incognito` ON by Default)**:
+  - Screen Vision now defaults to **Incognito (OFF)** on startup across Windows, Arch Linux / CachyOS, and Android; users explicitly toggle `Screen ON` whenever they want Zeki to inspect the screen.
 
 ## [0.4.0] - 2026-11-27
 

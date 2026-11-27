@@ -1,4 +1,4 @@
-# Zekrima Dynamic Island — Android Edition (`v0.4.0`)
+# Zekrima Dynamic Island — Android Edition (`v0.5.0`)
 
 Native Kotlin + Android `Canvas` floating Dynamic Island, AI Personal Assistant (**Zeki**), and **Cicada Mode** Live Meeting Translator for **Android 10+ (API 29 – 36)**.
 
