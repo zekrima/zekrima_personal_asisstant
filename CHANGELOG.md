@@ -2,6 +2,33 @@
 
 All notable changes to **Zekrima** will be documented in this file.
 
+## [0.4.0] - 2026-11-27
+
+### Added (Cicada Mode — Live Meeting Translator on Windows & Arch Linux / CachyOS)
+- **Direct System Audio Capture (No Meeting Bots) & Smart Speech Segmenter**:
+  - Captures remote meeting audio directly via **WASAPI Loopback** (`AUDCLNT_STREAMFLAGS_LOOPBACK`) on Windows and **PipeWire `@DEFAULT_MONITOR@`** (`parec`) on Arch Linux / CachyOS with **0.0% idle CPU** when stopped.
+  - Pure-Rust Cicada `SpeechSegmenter`: 30 ms frames, 10 ms onset click rejection, 100 Hz high-pass rumble rejection, steady-noise rejection, 0.55 s pause endpointing, and 7.5 s quietest-frame forced cuts.
+- **Dual-Channel Separation, Echo Deduplication & Bidirectional Quick-Reply**:
+  - Live toggleable **`Mic: ON/OFF`** hybrid channel separates **"Online"** (remote speaker) and **"You"** (local mic) with Cicada's `EchoFilter` (timing gate + bigram overlap) to eliminate speaker-bleed duplicates.
+  - **`Reply` (Bidirectional Quick-Reply)**: speak in your native language (e.g., Indonesian) and receive an instant translation into `cicada_reply_lang` (e.g., English), auto-copied to clipboard ready to read aloud or paste into meeting chat.
+- **Context-Aware Translation & Custom Glossary**:
+  - 1-step **Gemini Native Audio** (`LANG:` / `ORIGINAL:` / `TRANSLATION:`) or **Groq/OpenAI Whisper STT + Fast LLM** (with Google Translate fallback), powered by a 4-sentence sliding context window, noise/hallucination filter, and configurable **Custom Glossary** in Settings (`assistant.ini`).
+- **3-State Dynamic Island UI & New Zeki Animations**:
+  - **Standby / Listening (Collapsed Pill)**: blinking emerald live dot, language pair badge (`EN→ID`), 5-bar live speech waveform, and **Zeki wearing a glowing headset** with audio-reactive earcups.
+  - **Live Subtitle Bar (`620×94`)**: semi-transparent bilingual subtitle bar with **Zeki nodding gently** on each new translated line, plus **Click-Through (`Pass` / `Unlock`)** so clicks pass directly to Zoom/Meet/Teams underneath.
+  - **Expanded Transcript (`Live` tab, `560×340` ↔ `640×470`)**: **Zeki holding an animated notebook & pen** (`TakingNotes`), scrollable speaker-colored bilingual transcript, quick target-language & original-text toggles, Markdown export (`Copy MD` + auto-save to `meetings/`), one-click **Auto-Summary**, and **Live Q&A (`Ask Zeki`)** injecting the meeting transcript directly into Zekrima Assistant.
+  - Added Wayland IPC CLI flags `zekrima --cicada` / `--live` and `zekrima --reply` on Arch Linux / CachyOS.
+
+### Fixed & Improved
+- **Reliable Auto-Minimize on Mouse Leave (Windows & Arch Linux)**:
+  - Dynamic Island now reliably collapses back to compact pill whenever the cursor leaves the island (unless actively typing a chat draft or an AI turn is mid-flight), backed by a 320 ms cursor-bounds watchdog on Windows so fast cursor exits or missed `WM_MOUSELEAVE` events never leave the pill stuck open.
+- **Auto-Detect Available Models from API in Settings (Windows & Arch Linux)**:
+  - Settings automatically queries the provider's `/models` endpoint (`Gemini`, `OpenRouter`, `OpenCode Zen`, `NVIDIA NIM`, `Groq`, `OpenAI / Custom / Ollama`) on open, provider switch, and 650 ms after pasting/editing an API key (plus a manual `↻ Cek Model` button), populating the Model dropdown with live available models and clear status feedback.
+- **Smooth 10-Second Top-Edge Tuck Auto-Hide & Single-Press `Alt+H` Reveal (Windows & Arch Linux)**:
+  - Raised Auto-Hide idle timeout from 4 s to **10 s** and replaced the abrupt invisible fade with a smooth spring tuck into a subtle top-edge notch handle (`128 × 5`) that stays at **0.0% CPU** once settled.
+  - Fixed Windows `UpdateLayeredWindow` per-pixel alpha hit-testing (`alpha = 2/255` invisible `240 × 12` top-center sensor + seamless top-bezel hover bridge) so moving the mouse to the top edge of the screen immediately springs the island back into view with zero bounce.
+  - Fixed `Alt+H` (or custom Hide hotkey) requiring 2 presses while auto-hidden — pressing it once now immediately reveals the island.
+
 ## [0.3.0] - 2026-11-26
 
 ### Added (Zekrima Personal Assistant — Windows & Arch Linux / CachyOS Editions)

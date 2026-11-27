@@ -216,6 +216,47 @@ pub const GEMINI_TTS_VOICES: [&str; 6] = [
     "Zephyr",
 ];
 
+/// Supported target / reply languages for Cicada Mode (Live Meeting Translator).
+pub const CICADA_LANGUAGES: [(&str, &str); 8] = [
+    ("id", "Indonesian (ID)"),
+    ("en", "English (EN)"),
+    ("ja", "Japanese (JA)"),
+    ("zh-CN", "Chinese (ZH)"),
+    ("ko", "Korean (KO)"),
+    ("es", "Spanish (ES)"),
+    ("fr", "French (FR)"),
+    ("de", "German (DE)"),
+];
+
+pub fn cicada_lang_english_name(code: &str) -> &'static str {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "id" | "ind" => "Indonesian",
+        "en" | "en-us" | "en-gb" => "English",
+        "ja" | "jp" => "Japanese",
+        "zh" | "zh-cn" | "zh-hans" => "Simplified Chinese",
+        "zh-tw" | "zh-hant" => "Traditional Chinese",
+        "ko" | "kr" => "Korean",
+        "es" => "Spanish",
+        "fr" => "French",
+        "de" => "German",
+        _ => "Indonesian",
+    }
+}
+
+pub fn cicada_lang_short_badge(code: &str) -> &'static str {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "id" | "ind" => "ID",
+        "en" | "en-us" | "en-gb" => "EN",
+        "ja" | "jp" => "JA",
+        "zh" | "zh-cn" | "zh-hans" | "zh-tw" => "ZH",
+        "ko" | "kr" => "KO",
+        "es" => "ES",
+        "fr" => "FR",
+        "de" => "DE",
+        _ => "ID",
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PttHotkey {
     AltSpace,
@@ -415,6 +456,12 @@ pub struct AssistantConfig {
     pub ptt_hotkey: PttHotkey,
     pub hide_hotkey: HideHotkey,
     pub screen_resolution: ScreenResolution,
+
+    // Cicada Mode (Live Meeting Translator)
+    pub cicada_target_lang: String,
+    pub cicada_reply_lang: String,
+    pub cicada_show_original: bool,
+    pub cicada_glossary: String,
 }
 
 impl Default for AssistantConfig {
@@ -445,6 +492,10 @@ impl Default for AssistantConfig {
             ptt_hotkey: PttHotkey::AltSpace,
             hide_hotkey: HideHotkey::AltH,
             screen_resolution: ScreenResolution::Standard,
+            cicada_target_lang: "id".to_string(),
+            cicada_reply_lang: "en".to_string(),
+            cicada_show_original: true,
+            cicada_glossary: String::new(),
         }
     }
 }
@@ -601,7 +652,12 @@ impl AssistantConfig {
              # Hide/Show hotkey: alt+h | ctrl+shift+h | alt+x\n\
              hide_hotkey = {}\n\
              # Screen Vision resolution: standard (1024px) | hd (1600px)\n\
-             screen_resolution = {}\n",
+             screen_resolution = {}\n\n\
+             # --- Cicada Mode (Live Meeting Translator) ---\n\
+             cicada_target_lang = {}\n\
+             cicada_reply_lang = {}\n\
+             cicada_show_original = {}\n\
+             cicada_glossary = {}\n",
             self.llm_provider.id(),
             self.stt_provider.id(),
             self.gemini_api_key,
@@ -627,6 +683,10 @@ impl AssistantConfig {
             self.ptt_hotkey.id(),
             self.hide_hotkey.id(),
             self.screen_resolution.id(),
+            self.cicada_target_lang,
+            self.cicada_reply_lang,
+            if self.cicada_show_original { "true" } else { "false" },
+            self.cicada_glossary.replace(['\r', '\n'], "; "),
         )
     }
 
@@ -695,6 +755,13 @@ impl AssistantConfig {
                 "ptt_hotkey" => self.ptt_hotkey = PttHotkey::from_id(&val),
                 "hide_hotkey" => self.hide_hotkey = HideHotkey::from_id(&val),
                 "screen_resolution" => self.screen_resolution = ScreenResolution::from_id(&val),
+                "cicada_target_lang" => self.cicada_target_lang = val,
+                "cicada_reply_lang" => self.cicada_reply_lang = val,
+                "cicada_show_original" => {
+                    self.cicada_show_original =
+                        matches!(val.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
+                }
+                "cicada_glossary" => self.cicada_glossary = val,
                 _ => {}
             }
         }

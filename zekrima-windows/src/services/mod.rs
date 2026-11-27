@@ -2,6 +2,7 @@
 
 pub mod assistant;
 pub mod audio_viz;
+pub mod cicada;
 pub mod clipboard;
 pub mod config;
 pub mod files;

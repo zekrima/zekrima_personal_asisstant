@@ -6,7 +6,8 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::thread;
 
 use windows::core::{w, PCWSTR};
@@ -23,22 +24,27 @@ use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetMessageW, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW,
-    IsWindow, LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow,
+    IsWindow, KillTimer, LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage,
+    RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowTextW, ShowWindow,
     TranslateMessage, ASFW_ANY, CS_HREDRAW, CS_VREDRAW, HMENU, IDC_ARROW, IDI_APPLICATION,
     MB_ICONERROR, MB_OK, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_SETFONT, WM_USER,
-    WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_MINIMIZEBOX,
+    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_SETFONT, WM_TIMER,
+    WM_USER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_MINIMIZEBOX,
     WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
+use crate::services::assistant;
 use crate::services::config::{
     AssistantConfig, LlmProvider, ALL_HIDE_HOTKEYS, ALL_LLM_PROVIDERS, ALL_PTT_HOTKEYS,
-    ALL_SCREEN_RESOLUTIONS, ALL_STT_PROVIDERS, GEMINI_TTS_MODELS, GEMINI_TTS_VOICES,
+    ALL_SCREEN_RESOLUTIONS, ALL_STT_PROVIDERS, CICADA_LANGUAGES, GEMINI_TTS_MODELS,
+    GEMINI_TTS_VOICES,
 };
 
 /// Posted back to the main Dynamic Island window once settings are saved.
 pub const WM_SETTINGS_SAVED: u32 = WM_USER + 220;
+const WM_MODELS_FETCHED: u32 = WM_USER + 221;
+const TIMER_MODEL_FETCH_DEBOUNCE: usize = 901;
+const EN_CHANGE: u16 = 0x0300;
 
 const SETTINGS_CLASS: PCWSTR = w!("ZekrimaSettingsWindow");
 
@@ -60,6 +66,11 @@ const IDC_TTS_VOICE_COMBO: usize = 114;
 const IDC_PTT_HOTKEY_COMBO: usize = 115;
 const IDC_HIDE_HOTKEY_COMBO: usize = 116;
 const IDC_SCREEN_RES_COMBO: usize = 117;
+const IDC_CICADA_TARGET_COMBO: usize = 118;
+const IDC_CICADA_REPLY_COMBO: usize = 119;
+const IDC_CICADA_GLOSSARY_EDIT: usize = 123;
+const IDC_FETCH_MODELS_BTN: usize = 124;
+const IDC_MODEL_STATUS_LABEL: usize = 125;
 const IDC_SAVE_BTN: usize = 120;
 const IDC_OPEN_INI_BTN: usize = 121;
 const IDC_CANCEL_BTN: usize = 122;
@@ -97,6 +108,15 @@ const LANG_OPTIONS: [(&str, &str); 3] = [
 
 /// Tracks currently open Settings HWND across threads (single-instance).
 static ACTIVE_SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
+static MODEL_FETCH_GEN: AtomicU64 = AtomicU64::new(0);
+
+struct ModelFetchOutcome {
+    gen: u64,
+    provider: LlmProvider,
+    result: Result<Vec<String>, String>,
+}
+
+static PENDING_MODEL_FETCH: Mutex<Option<ModelFetchOutcome>> = Mutex::new(None);
 
 thread_local! {
     static STATE: RefCell<Option<SettingsState>> = const { RefCell::new(None) };
@@ -106,11 +126,13 @@ struct SettingsState {
     main_hwnd: isize,
     cfg: AssistantConfig,
     active_provider: LlmProvider,
+    suppress_edit_events: bool,
     font_regular: HFONT,
     font_bold: HFONT,
     bg_brush: HBRUSH,
     hwnd_provider: HWND,
     hwnd_model: HWND,
+    hwnd_model_status: HWND,
     hwnd_key_label: HWND,
     hwnd_api_key: HWND,
     hwnd_show_keys: HWND,
@@ -126,6 +148,9 @@ struct SettingsState {
     hwnd_auto_hide: HWND,
     hwnd_lang: HWND,
     hwnd_prompt: HWND,
+    hwnd_cicada_target: HWND,
+    hwnd_cicada_reply: HWND,
+    hwnd_cicada_glossary: HWND,
 }
 
 impl Drop for SettingsState {
@@ -266,11 +291,11 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
 
     let dpi = GetDpiForSystem().max(96) as i32;
     let win_w = scale(530, dpi);
-    let win_h = scale(755, dpi);
     let screen_w = GetSystemMetrics(SM_CXSCREEN);
     let screen_h = GetSystemMetrics(SM_CYSCREEN);
+    let win_h = scale(876, dpi).min(screen_h - scale(36, dpi));
     let win_x = (screen_w - win_w) / 2;
-    let win_y = (screen_h - win_h) / 2;
+    let win_y = ((screen_h - win_h) / 2).max(8);
 
     let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     let Ok(hwnd) = CreateWindowExW(
@@ -359,9 +384,9 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
     }
     y += scale(34, dpi);
 
-    // 2. Free Model Preset (editable combo!)
+    // 2. Live Auto-Detected Model Picker + Fetch Models button
     make_label(
-        "Model (pilih preset gratis atau ketik ID model custom):",
+        "Model (otomatis terdeteksi dari API saat isi key, atau ketik custom):",
         pad,
         y,
         full_w,
@@ -370,6 +395,8 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
         false,
     );
     y += scale(20, dpi);
+    let fetch_btn_w = scale(104, dpi);
+    let model_combo_w = full_w - fetch_btn_w - scale(8, dpi);
     let hwnd_model = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         w!("COMBOBOX"),
@@ -381,7 +408,7 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
             | WINDOW_STYLE(CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_HASSTRINGS),
         pad,
         y,
-        full_w,
+        model_combo_w,
         combo_drop_h,
         hwnd,
         HMENU(IDC_MODEL_COMBO as *mut c_void),
@@ -390,7 +417,35 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
     )
     .unwrap_or_default();
     apply_font(hwnd_model, font_regular);
-    y += scale(34, dpi);
+
+    let fetch_btn = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("BUTTON"),
+        w!("↻ Cek Model"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON),
+        pad + model_combo_w + scale(8, dpi),
+        y,
+        fetch_btn_w,
+        scale(24, dpi),
+        hwnd,
+        HMENU(IDC_FETCH_MODELS_BTN as *mut c_void),
+        instance,
+        None,
+    )
+    .unwrap_or_default();
+    apply_font(fetch_btn, font_regular);
+    y += scale(27, dpi);
+
+    let hwnd_model_status = make_label(
+        "Masukkan API key di bawah — daftar model tersedia akan otomatis terdeteksi.",
+        pad,
+        y,
+        full_w,
+        scale(17, dpi),
+        IDC_MODEL_STATUS_LABEL,
+        false,
+    );
+    y += scale(21, dpi);
 
     // 3. LLM API Key + Show checkbox
     let hwnd_key_label = make_label(active_provider.key_hint(), pad, y, full_w, lbl_h, IDC_API_KEY_LABEL, false);
@@ -731,11 +786,88 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
     set_text(hwnd_prompt, &cfg.system_prompt);
     y += prompt_h + scale(10, dpi);
 
+    // 7b. Cicada Mode (Live Meeting Translator)
+    make_label("Cicada Target Lang:", pad, y, half_w, lbl_h, 0, false);
+    make_label("Cicada Quick-Reply Lang:", col2_x, y, half_w, lbl_h, 0, false);
+    y += scale(19, dpi);
+
+    let hwnd_cicada_target = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("COMBOBOX"),
+        w!(""),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST | CBS_HASSTRINGS),
+        pad,
+        y,
+        half_w,
+        combo_drop_h,
+        hwnd,
+        HMENU(IDC_CICADA_TARGET_COMBO as *mut c_void),
+        instance,
+        None,
+    )
+    .unwrap_or_default();
+    apply_font(hwnd_cicada_target, font_regular);
+    let mut matched_ct = 0usize;
+    for (idx, (code, label)) in CICADA_LANGUAGES.iter().enumerate() {
+        combo_add(hwnd_cicada_target, label);
+        if code.eq_ignore_ascii_case(&cfg.cicada_target_lang) {
+            matched_ct = idx;
+        }
+    }
+    combo_select(hwnd_cicada_target, matched_ct);
+
+    let hwnd_cicada_reply = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("COMBOBOX"),
+        w!(""),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST | CBS_HASSTRINGS),
+        col2_x,
+        y,
+        half_w,
+        combo_drop_h,
+        hwnd,
+        HMENU(IDC_CICADA_REPLY_COMBO as *mut c_void),
+        instance,
+        None,
+    )
+    .unwrap_or_default();
+    apply_font(hwnd_cicada_reply, font_regular);
+    let mut matched_cr = 1usize;
+    for (idx, (code, label)) in CICADA_LANGUAGES.iter().enumerate() {
+        combo_add(hwnd_cicada_reply, label);
+        if code.eq_ignore_ascii_case(&cfg.cicada_reply_lang) {
+            matched_cr = idx;
+        }
+    }
+    combo_select(hwnd_cicada_reply, matched_cr);
+    y += scale(30, dpi);
+
+    make_label("Cicada Custom Glossary (pisahkan dengan ; contoh: Zekrima; Kubernetes):", pad, y, full_w, lbl_h, 0, false);
+    y += scale(19, dpi);
+    let hwnd_cicada_glossary = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        w!("EDIT"),
+        w!(""),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL),
+        pad,
+        y,
+        full_w,
+        ctl_h,
+        hwnd,
+        HMENU(IDC_CICADA_GLOSSARY_EDIT as *mut c_void),
+        instance,
+        None,
+    )
+    .unwrap_or_default();
+    apply_font(hwnd_cicada_glossary, font_regular);
+    set_text(hwnd_cicada_glossary, &cfg.cicada_glossary);
+    y += ctl_h + scale(10, dpi);
+
     // 8. Auto-Hide toggle + Hide shortcut info
     let hwnd_auto_hide = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         w!("BUTTON"),
-        w!("Auto-Hide Island saat idle (sentuh tepi atas untuk muncul • Shortcut Hide: Alt+H)"),
+        w!("Auto-Hide ke tepi atas saat idle 10 detik (arahkan mouse ke atas untuk muncul)"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX),
         pad,
         y,
@@ -811,15 +943,17 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
     .unwrap_or_default();
     apply_font(save_btn, font_bold);
 
-    let state = SettingsState {
+    let mut state = SettingsState {
         main_hwnd: main_hwnd_raw,
         cfg,
         active_provider,
+        suppress_edit_events: false,
         font_regular,
         font_bold,
         bg_brush,
         hwnd_provider,
         hwnd_model,
+        hwnd_model_status,
         hwnd_key_label,
         hwnd_api_key,
         hwnd_show_keys,
@@ -835,8 +969,12 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
         hwnd_auto_hide,
         hwnd_lang,
         hwnd_prompt,
+        hwnd_cicada_target,
+        hwnd_cicada_reply,
+        hwnd_cicada_glossary,
     };
-    populate_provider_fields(&state, active_provider);
+    populate_provider_fields(&mut state, active_provider);
+    trigger_model_fetch(hwnd, &state, false);
 
     STATE.with(|slot| {
         *slot.borrow_mut() = Some(state);
@@ -860,24 +998,16 @@ unsafe fn run_settings_window(main_hwnd_raw: isize) {
     ACTIVE_SETTINGS_HWND.store(0, Ordering::SeqCst);
 }
 
-unsafe fn populate_provider_fields(st: &SettingsState, provider: LlmProvider) {
+unsafe fn populate_provider_fields(st: &mut SettingsState, provider: LlmProvider) {
+    st.suppress_edit_events = true;
     set_text(st.hwnd_key_label, provider.key_hint());
     set_text(st.hwnd_api_key, st.cfg.api_key_for(provider));
 
-    combo_clear(st.hwnd_model);
-    let saved_model = st.cfg.model_for(provider);
-    let mut matched = None;
-    for (idx, preset) in provider.model_presets().iter().enumerate() {
-        combo_add(st.hwnd_model, preset);
-        if *preset == saved_model {
-            matched = Some(idx);
-        }
-    }
-    if let Some(idx) = matched {
-        combo_select(st.hwnd_model, idx);
-    } else {
-        set_text(st.hwnd_model, saved_model);
-    }
+    populate_model_combo(
+        st.hwnd_model,
+        provider.model_presets(),
+        st.cfg.model_for(provider),
+    );
 
     let url = if provider == LlmProvider::OpenAi {
         st.cfg.openai_base_url.as_str()
@@ -890,6 +1020,119 @@ unsafe fn populate_provider_fields(st: &SettingsState, provider: LlmProvider) {
     // Keep Groq STT field synchronized when switching to/from Groq as main LLM
     set_text(st.hwnd_groq_key, &st.cfg.groq_api_key);
     let _ = EnableWindow(st.hwnd_groq_key, provider != LlmProvider::Groq);
+    st.suppress_edit_events = false;
+}
+
+unsafe fn populate_model_combo<S: AsRef<str>>(hwnd_model: HWND, models: &[S], preferred: &str) {
+    combo_clear(hwnd_model);
+    let pref_trimmed = preferred.trim();
+    let mut matched = None;
+    for (idx, m) in models.iter().enumerate() {
+        let s = m.as_ref();
+        combo_add(hwnd_model, s);
+        if s == pref_trimmed {
+            matched = Some(idx);
+        }
+    }
+    if let Some(idx) = matched {
+        combo_select(hwnd_model, idx);
+    } else if !pref_trimmed.is_empty() {
+        set_text(hwnd_model, pref_trimmed);
+    } else if !models.is_empty() {
+        combo_select(hwnd_model, 0);
+    }
+}
+
+unsafe fn trigger_model_fetch(hwnd: HWND, st: &SettingsState, manual: bool) {
+    let provider = st.active_provider;
+    let key = get_text(st.hwnd_api_key).trim().to_string();
+    let base_url = get_text(st.hwnd_base_url).trim().to_string();
+
+    if key.is_empty() && !matches!(provider, LlmProvider::OpenRouter | LlmProvider::OpenAi) {
+        set_text(
+            st.hwnd_model_status,
+            if manual {
+                "Masukkan API key terlebih dahulu untuk mendeteksi model dari API."
+            } else {
+                "Preset bawaan aktif — isi API key untuk auto-deteksi semua model API."
+            },
+        );
+        return;
+    }
+
+    let gen = MODEL_FETCH_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    set_text(
+        st.hwnd_model_status,
+        &format!("⏳ Mendeteksi daftar model dari {}...", provider.short_badge()),
+    );
+
+    let hwnd_raw = hwnd.0 as isize;
+    let _ = thread::Builder::new()
+        .name("zekrima-fetch-models".to_owned())
+        .spawn(move || {
+            let result = assistant::fetch_available_models(provider, &key, &base_url);
+            if MODEL_FETCH_GEN.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            if let Ok(mut slot) = PENDING_MODEL_FETCH.lock() {
+                *slot = Some(ModelFetchOutcome {
+                    gen,
+                    provider,
+                    result,
+                });
+            }
+            let target = HWND(hwnd_raw as *mut c_void);
+            if IsWindow(target).as_bool() {
+                let _ = PostMessageW(target, WM_MODELS_FETCHED, WPARAM(0), LPARAM(0));
+            }
+        });
+}
+
+unsafe fn apply_fetched_models(st: &mut SettingsState) {
+    let outcome = PENDING_MODEL_FETCH
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    let Some(outcome) = outcome else {
+        return;
+    };
+    if outcome.gen != MODEL_FETCH_GEN.load(Ordering::SeqCst)
+        || outcome.provider != st.active_provider
+    {
+        return;
+    }
+
+    match outcome.result {
+        Ok(models) => {
+            let current_text = get_text(st.hwnd_model);
+            let preferred = if current_text.trim().is_empty() {
+                st.cfg.model_for(st.active_provider).to_string()
+            } else {
+                current_text
+            };
+            let count = models.len();
+            // Keep currently typed model if present, otherwise select the top available model
+            let keep = if models.iter().any(|m| m == preferred.trim()) {
+                preferred.as_str()
+            } else {
+                models.first().map(|s| s.as_str()).unwrap_or("")
+            };
+            populate_model_combo(st.hwnd_model, &models, keep);
+            set_text(
+                st.hwnd_model_status,
+                &format!(
+                    "✓ {count} model terdeteksi otomatis dari {} — pilih di dropdown!",
+                    st.active_provider.short_badge()
+                ),
+            );
+        }
+        Err(err) => {
+            set_text(
+                st.hwnd_model_status,
+                &format!("! {err} (preset bawaan tetap bisa dipakai)"),
+            );
+        }
+    }
 }
 
 unsafe fn flush_current_provider_into_cfg(st: &mut SettingsState) {
@@ -977,6 +1220,17 @@ unsafe fn save_and_close(hwnd: HWND, st: &mut SettingsState) {
     if !prompt.is_empty() {
         st.cfg.system_prompt = prompt;
     }
+    if let Some(idx) = combo_cursel(st.hwnd_cicada_target) {
+        if let Some((code, _)) = CICADA_LANGUAGES.get(idx) {
+            st.cfg.cicada_target_lang = (*code).to_string();
+        }
+    }
+    if let Some(idx) = combo_cursel(st.hwnd_cicada_reply) {
+        if let Some((code, _)) = CICADA_LANGUAGES.get(idx) {
+            st.cfg.cicada_reply_lang = (*code).to_string();
+        }
+    }
+    st.cfg.cicada_glossary = get_text(st.hwnd_cicada_glossary).trim().to_string();
 
     match st.cfg.save() {
         Ok(()) => {
@@ -1031,6 +1285,7 @@ unsafe extern "system" fn settings_wndproc(
             let code = ((wparam.0 >> 16) & 0xFFFF) as u16;
             match (id, code) {
                 (IDC_PROVIDER_COMBO, CBN_SELCHANGE) => {
+                    let _ = KillTimer(hwnd, TIMER_MODEL_FETCH_DEBOUNCE);
                     STATE.with(|slot| {
                         if let Ok(mut guard) = slot.try_borrow_mut() {
                             if let Some(st) = guard.as_mut() {
@@ -1039,8 +1294,32 @@ unsafe extern "system" fn settings_wndproc(
                                     if let Some(&next) = ALL_LLM_PROVIDERS.get(idx) {
                                         st.active_provider = next;
                                         populate_provider_fields(st, next);
+                                        trigger_model_fetch(hwnd, st, false);
                                     }
                                 }
+                            }
+                        }
+                    });
+                    LRESULT(0)
+                }
+                (IDC_API_KEY_EDIT, EN_CHANGE) | (IDC_BASE_URL_EDIT, EN_CHANGE) => {
+                    let should_schedule = STATE.with(|slot| {
+                        slot.try_borrow()
+                            .ok()
+                            .and_then(|g| g.as_ref().map(|st| !st.suppress_edit_events))
+                            .unwrap_or(false)
+                    });
+                    if should_schedule {
+                        let _ = SetTimer(hwnd, TIMER_MODEL_FETCH_DEBOUNCE, 650, None);
+                    }
+                    LRESULT(0)
+                }
+                (IDC_FETCH_MODELS_BTN, BN_CLICKED) => {
+                    let _ = KillTimer(hwnd, TIMER_MODEL_FETCH_DEBOUNCE);
+                    STATE.with(|slot| {
+                        if let Ok(guard) = slot.try_borrow() {
+                            if let Some(st) = guard.as_ref() {
+                                trigger_model_fetch(hwnd, st, true);
                             }
                         }
                     });
@@ -1092,7 +1371,29 @@ unsafe extern "system" fn settings_wndproc(
                 _ => DefWindowProcW(hwnd, message, wparam, lparam),
             }
         }
+        WM_TIMER if wparam.0 == TIMER_MODEL_FETCH_DEBOUNCE => {
+            let _ = KillTimer(hwnd, TIMER_MODEL_FETCH_DEBOUNCE);
+            STATE.with(|slot| {
+                if let Ok(guard) = slot.try_borrow() {
+                    if let Some(st) = guard.as_ref() {
+                        trigger_model_fetch(hwnd, st, false);
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_MODELS_FETCHED => {
+            STATE.with(|slot| {
+                if let Ok(mut guard) = slot.try_borrow_mut() {
+                    if let Some(st) = guard.as_mut() {
+                        apply_fetched_models(st);
+                    }
+                }
+            });
+            LRESULT(0)
+        }
         WM_CLOSE => {
+            let _ = KillTimer(hwnd, TIMER_MODEL_FETCH_DEBOUNCE);
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }

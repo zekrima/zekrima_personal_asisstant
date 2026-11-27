@@ -16,6 +16,13 @@ const SLEEP_AFTER_SECS: u64 = 15 * 60;
 const AUTO_HAPPY_DURATION: Duration = Duration::from_millis(2200);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZekiCicadaAccessory {
+    None,
+    Headset,
+    TakingNotes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZekiState {
     Idle,
     Sleepy,
@@ -160,6 +167,10 @@ pub struct ZekiEngine {
     live_voice_level: Option<f32>,
     voice_level: f32,
 
+    cicada_accessory: ZekiCicadaAccessory,
+    cicada_audio_level: f32,
+    nod_timer: f32,
+
     sparks: Vec<SparkParticle>,
     rng_state: u32,
 }
@@ -197,6 +208,9 @@ impl ZekiEngine {
             dance_level: 0.0,
             live_voice_level: None,
             voice_level: 0.0,
+            cicada_accessory: ZekiCicadaAccessory::None,
+            cicada_audio_level: 0.0,
+            nod_timer: 0.0,
             sparks: Vec::new(),
             rng_state: 0x5A45_4B49,
         }
@@ -216,11 +230,26 @@ impl ZekiEngine {
 
     pub fn is_high_energy(&self) -> bool {
         self.state.is_high_energy()
+            || self.cicada_accessory != ZekiCicadaAccessory::None
             || self.hop_timer > 0.0
+            || self.nod_timer > 0.0
             || self.shake_timer > 0.0
             || self.peek_timer > 0.0
             || !self.sparks.is_empty()
             || self.dance_level > 0.02
+    }
+
+    pub fn set_cicada_mode(&mut self, accessory: ZekiCicadaAccessory, audio_level: f32) {
+        self.cicada_accessory = accessory;
+        self.cicada_audio_level = audio_level.clamp(0.0, 1.0);
+        if accessory != ZekiCicadaAccessory::None {
+            self.last_interaction = Instant::now();
+        }
+    }
+
+    pub fn trigger_nod(&mut self) {
+        self.nod_timer = 0.55;
+        self.last_interaction = Instant::now();
     }
 
     pub fn set_dancing(&mut self, playing: bool) {
@@ -546,6 +575,20 @@ impl ZekiEngine {
             target_ox += (self.elapsed * 42.0).sin() * 0.14 * decay;
         }
 
+        if self.nod_timer > 0.0 {
+            self.nod_timer = (self.nod_timer - dt).max(0.0);
+            let p = 1.0 - (self.nod_timer / 0.55).clamp(0.0, 1.0);
+            let nod = (p * PI * 2.0).sin().max(0.0) * (1.0 - p * 0.45);
+            target_oy += nod * 0.14;
+            target_tilt += nod * 0.08;
+        }
+
+        if self.cicada_accessory != ZekiCicadaAccessory::None && self.cicada_audio_level > 0.05 {
+            let sway = (self.elapsed * 9.0).sin() * self.cicada_audio_level;
+            target_tilt += sway * 0.06;
+            target_oy -= self.cicada_audio_level * 0.04;
+        }
+
         if self.dance_level > 0.01 {
             let beat = (self.elapsed * 112.0) / 60.0;
             let hop = (PI * beat).sin().abs();
@@ -789,7 +832,89 @@ impl ZekiEngine {
             _ => {}
         }
 
+        // 6b. Cicada Mode Headset + Boom Mic
+        if self.cicada_accessory != ZekiCicadaAccessory::None {
+            let ear_bob = (self.elapsed as f64 * 12.0).sin() * 0.08 * self.cicada_audio_level as f64;
+            cr.set_source_rgba(0.16, 0.85, 0.62, 0.94 * alpha);
+            cr.set_line_width((radius * 0.11).clamp(1.5, 3.2));
+            let _ = cr.save();
+            cr.scale(rx * 1.06, ry * 1.04);
+            cr.arc(0.0, -0.04, 1.0, PI64, 2.0 * PI64);
+            let _ = cr.restore();
+            let _ = cr.stroke();
+
+            let cup_w = (radius * 0.24).clamp(2.4, 7.2);
+            let cup_h = (radius * (0.46 + 0.10 * self.cicada_audio_level as f64)).clamp(4.8, 15.0);
+            for side in [-1.0f64, 1.0f64] {
+                let cx_cup = side * (rx * 1.02);
+                let cy_cup = ear_bob * side * radius;
+                rounded_rect(
+                    cr,
+                    cx_cup - cup_w / 2.0,
+                    cy_cup - cup_h / 2.0,
+                    cup_w,
+                    cup_h,
+                    cup_w * 0.45,
+                );
+                cr.set_source_rgba(0.08, 0.14, 0.16, 0.98 * alpha);
+                let _ = cr.fill_preserve();
+                cr.set_source_rgba(0.16, 0.85, 0.62, 0.94 * alpha);
+                cr.set_line_width((radius * 0.07).clamp(1.0, 2.0));
+                let _ = cr.stroke();
+            }
+
+            if !is_mini {
+                cr.set_source_rgba(0.72, 0.95, 0.86, 0.88 * alpha);
+                cr.set_line_width((radius * 0.065).clamp(1.2, 2.0));
+                cr.move_to(rx * 0.96, ry * 0.18);
+                cr.line_to(rx * 0.36, ry * 0.44);
+                let _ = cr.stroke();
+                fill_ellipse(
+                    cr,
+                    rx * 0.36,
+                    ry * 0.44,
+                    (radius * 0.095).clamp(1.8, 3.2),
+                    (radius * 0.075).clamp(1.5, 2.6),
+                    (0.18, 0.92, 0.65, 0.96 * alpha),
+                );
+            }
+        }
+
         let _ = cr.restore();
+
+        // 6c. TakingNotes miniature notebook & animated pen (Expanded Transcript view)
+        if self.cicada_accessory == ZekiCicadaAccessory::TakingNotes && !is_mini {
+            let nb_w = (radius * 0.62).clamp(13.0, 22.0);
+            let nb_h = (radius * 0.72).clamp(15.0, 26.0);
+            let nb_x = draw_cx + radius * 0.68;
+            let nb_y = draw_cy + radius * 0.24;
+            rounded_rect(cr, nb_x, nb_y, nb_w, nb_h, 3.0);
+            cr.set_source_rgba(0.95, 0.97, 1.0, 0.95 * alpha);
+            let _ = cr.fill_preserve();
+            cr.set_source_rgba(0.16, 0.82, 0.62, 0.92 * alpha);
+            cr.set_line_width(1.3);
+            let _ = cr.stroke();
+
+            cr.set_source_rgba(0.25, 0.35, 0.48, 0.65 * alpha);
+            cr.set_line_width(1.2);
+            for row in 0..3 {
+                let ly = nb_y + 5.0 + row as f64 * (nb_h - 9.0) / 2.5;
+                let lw = if row == 2 { nb_w * 0.52 } else { nb_w * 0.68 };
+                cr.move_to(nb_x + 3.0, ly);
+                cr.line_to(nb_x + 3.0 + lw, ly);
+                let _ = cr.stroke();
+            }
+
+            let sx = (self.elapsed as f64 * 8.5).sin() * 2.4;
+            let sy = (self.elapsed as f64 * 4.2).cos() * 1.4;
+            let px = nb_x + nb_w * 0.62 + sx;
+            let py = nb_y + nb_h * 0.62 + sy;
+            cr.set_source_rgba(0.98, 0.72, 0.22, 0.98 * alpha);
+            cr.set_line_width(2.2);
+            cr.move_to(px, py);
+            cr.line_to(px + 8.5, py - 9.5);
+            let _ = cr.stroke();
+        }
 
         // 7. Ambient floating badges & particles (un-tilted world coordinates)
         match self.state {

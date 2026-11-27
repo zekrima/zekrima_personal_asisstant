@@ -184,3 +184,8 @@ unsafe fn write_clipboard_text(hwnd: HWND, text: &str) -> bool {
     let _ = CloseClipboard();
     ok
 }
+
+/// Thread-safe helper to copy UTF-16 text into the Windows clipboard.
+pub fn set_clipboard_text(text: &str) -> bool {
+    unsafe { write_clipboard_text(HWND::default(), text) }
+}

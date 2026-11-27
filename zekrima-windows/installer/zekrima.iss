@@ -2,7 +2,7 @@
 ; Builds a lightweight per-user Windows GUI installer (no UAC admin required).
 
 #define MyAppName "Zekrima Personal Assistant"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.4.0"
 #define MyAppPublisher "Zekrima"
 #define MyAppURL "https://github.com/zekrima/zekrima_personal_asisstant"
 #define MyAppExeName "zekrima.exe"

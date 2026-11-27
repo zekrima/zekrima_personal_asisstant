@@ -53,6 +53,7 @@ impl RectF {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpandedTab {
     Zeki,
+    Cicada,
     Media,
     Timer,
     Clipboard,
@@ -60,8 +61,9 @@ pub enum ExpandedTab {
     Notifications,
 }
 
-pub const ALL_TABS: [ExpandedTab; 6] = [
+pub const ALL_TABS: [ExpandedTab; 7] = [
     ExpandedTab::Zeki,
+    ExpandedTab::Cicada,
     ExpandedTab::Media,
     ExpandedTab::Timer,
     ExpandedTab::Clipboard,
@@ -87,6 +89,21 @@ pub enum HitTarget {
     ZekiChatToggleSize,
     ZekiChatInput,
     ZekiChatSend,
+    CicadaToggleListen,
+    CicadaToggleMic,
+    CicadaQuickReply,
+    CicadaToggleSubtitleBar,
+    CicadaToggleClickThrough,
+    CicadaCycleLang,
+    CicadaToggleOriginal,
+    CicadaCopyTranscript,
+    CicadaSummarize,
+    CicadaAskZeki,
+    CicadaClear,
+    CicadaCard,
+    CicadaToggleSize,
+    CicadaCopyQuickReply,
+    CicadaExpandFromBar,
     MediaControl(MediaControl),
     ToastDismiss(u32),
     ToastClear(u32),
@@ -102,18 +119,111 @@ pub enum HitTarget {
 pub fn tab_rect_for_width(tab: ExpandedTab, pill_w: f32) -> RectF {
     let idx = match tab {
         ExpandedTab::Zeki => 0.0,
-        ExpandedTab::Media => 1.0,
-        ExpandedTab::Timer => 2.0,
-        ExpandedTab::Clipboard => 3.0,
-        ExpandedTab::System => 4.0,
-        ExpandedTab::Notifications => 5.0,
+        ExpandedTab::Cicada => 1.0,
+        ExpandedTab::Media => 2.0,
+        ExpandedTab::Timer => 3.0,
+        ExpandedTab::Clipboard => 4.0,
+        ExpandedTab::System => 5.0,
+        ExpandedTab::Notifications => 6.0,
     };
-    let pad = 16.0;
-    let gap = 5.0;
+    let pad = 14.0;
+    let gap = 4.0;
     let w = pill_w.max(EXPANDED_WIDTH);
-    let tab_w = (w - pad * 2.0 - gap * 5.0) / 6.0;
+    let tab_w = (w - pad * 2.0 - gap * 6.0) / 7.0;
     let left = pad + idx * (tab_w + gap);
     RectF::new(left, 11.0, left + tab_w, 33.0)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CicadaBarLayout {
+    pub zeki_center: (f32, f32),
+    pub text_rect: RectF,
+    pub reply_btn: RectF,
+    pub pass_btn: RectF,
+    pub expand_btn: RectF,
+    pub stop_btn: RectF,
+}
+
+pub fn cicada_bar_layout(pill_w: f32, pill_h: f32) -> CicadaBarLayout {
+    let w = pill_w.max(360.0);
+    let h = pill_h.max(76.0);
+    let right = w - 12.0;
+    let stop_btn = RectF::new(right - 44.0, 10.0, right, 30.0);
+    let expand_btn = RectF::new(stop_btn.left - 48.0, 10.0, stop_btn.left - 4.0, 30.0);
+    let pass_btn = RectF::new(expand_btn.left - 48.0, 10.0, expand_btn.left - 4.0, 30.0);
+    let reply_btn = RectF::new(pass_btn.left - 54.0, 10.0, pass_btn.left - 4.0, 30.0);
+    let text_rect = RectF::new(66.0, 32.0, w - 14.0, h - 8.0);
+    CicadaBarLayout {
+        zeki_center: (34.0, h / 2.0 + 2.0),
+        text_rect,
+        reply_btn,
+        pass_btn,
+        expand_btn,
+        stop_btn,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CicadaPanelLayout {
+    pub zeki_stage: RectF,
+    pub listen_btn: RectF,
+    pub mic_btn: RectF,
+    pub reply_btn: RectF,
+    pub sub_bar_btn: RectF,
+    pub lang_btn: RectF,
+    pub orig_btn: RectF,
+    pub size_btn: RectF,
+    pub card: RectF,
+    pub copy_btn: RectF,
+    pub summary_btn: RectF,
+    pub ask_btn: RectF,
+    pub clear_btn: RectF,
+}
+
+pub fn cicada_panel_layout(pill_w: f32, pill_h: f32) -> CicadaPanelLayout {
+    let w = pill_w.max(440.0);
+    let h = pill_h.max(240.0);
+    let right = w - 16.0;
+
+    let zeki_stage = RectF::new(16.0, 44.0, 106.0, 134.0);
+    let listen_btn = RectF::new(16.0, 142.0, 106.0, 172.0);
+    let mic_btn = RectF::new(16.0, 178.0, 106.0, 206.0);
+    let reply_btn = RectF::new(16.0, 212.0, 106.0, 240.0);
+    let sub_bar_btn = RectF::new(16.0, 246.0, 106.0, 274.0);
+
+    let size_btn = RectF::new(right - 46.0, 44.0, right, 66.0);
+    let orig_btn = RectF::new(size_btn.left - 56.0, 44.0, size_btn.left - 5.0, 66.0);
+    let lang_btn = RectF::new(orig_btn.left - 62.0, 44.0, orig_btn.left - 5.0, 66.0);
+
+    let bot_bottom = h - 12.0;
+    let bot_top = bot_bottom - 28.0;
+    let col_left = 118.0;
+    let col_w = (right - col_left).max(200.0);
+    let gap = 6.0;
+    let clear_w = 54.0;
+    let rem_w = (col_w - clear_w - gap * 3.0) / 3.0;
+    let copy_btn = RectF::new(col_left, bot_top, col_left + rem_w, bot_bottom);
+    let summary_btn = RectF::new(copy_btn.right + gap, bot_top, copy_btn.right + gap + rem_w, bot_bottom);
+    let ask_btn = RectF::new(summary_btn.right + gap, bot_top, summary_btn.right + gap + rem_w, bot_bottom);
+    let clear_btn = RectF::new(ask_btn.right + gap, bot_top, right, bot_bottom);
+
+    let card = RectF::new(col_left, 72.0, right, (bot_top - 8.0).max(130.0));
+
+    CicadaPanelLayout {
+        zeki_stage,
+        listen_btn,
+        mic_btn,
+        reply_btn,
+        sub_bar_btn,
+        lang_btn,
+        orig_btn,
+        size_btn,
+        card,
+        copy_btn,
+        summary_btn,
+        ask_btn,
+        clear_btn,
+    }
 }
 
 pub const ZEKI_STAGE_RECT: RectF = RectF::new(18.0, 46.0, 118.0, 146.0);
@@ -322,6 +432,9 @@ pub struct HitContext<'a> {
     pub assistant_has_reply: bool,
     pub assistant_has_error: bool,
     pub assistant_has_file: bool,
+    pub cicada_subtitle_bar: bool,
+    pub cicada_has_entries: bool,
+    pub cicada_has_quick_reply: bool,
 }
 
 pub fn hit_target_at(x: f32, y: f32, ctx: &HitContext) -> Option<HitTarget> {
@@ -339,6 +452,23 @@ pub fn hit_target_at(x: f32, y: f32, ctx: &HitContext) -> Option<HitTarget> {
         return None;
     }
 
+    if ctx.cicada_subtitle_bar && !ctx.expanded {
+        let bl = cicada_bar_layout(ctx.pill_width, ctx.pill_height);
+        if bl.stop_btn.contains(x, y) {
+            return Some(HitTarget::CicadaToggleListen);
+        }
+        if bl.expand_btn.contains(x, y) {
+            return Some(HitTarget::CicadaExpandFromBar);
+        }
+        if bl.pass_btn.contains(x, y) {
+            return Some(HitTarget::CicadaToggleClickThrough);
+        }
+        if bl.reply_btn.contains(x, y) {
+            return Some(HitTarget::CicadaQuickReply);
+        }
+        return Some(HitTarget::CicadaExpandFromBar);
+    }
+
     if !ctx.expanded || !controls_active(ctx.pill_height) {
         return None;
     }
@@ -349,7 +479,7 @@ pub fn hit_target_at(x: f32, y: f32, ctx: &HitContext) -> Option<HitTarget> {
         }
     }
 
-    if ctx.expanded_tab != ExpandedTab::Zeki {
+    if !matches!(ctx.expanded_tab, ExpandedTab::Zeki | ExpandedTab::Cicada) {
         if ZEKI_DOCK_POKE_RECT.contains(x, y) {
             return Some(HitTarget::ZekiPoke);
         }
@@ -365,6 +495,52 @@ pub fn hit_target_at(x: f32, y: f32, ctx: &HitContext) -> Option<HitTarget> {
     }
 
     match ctx.expanded_tab {
+        ExpandedTab::Cicada => {
+            let cl = cicada_panel_layout(ctx.pill_width, ctx.pill_height);
+            if cl.zeki_stage.contains(x, y) {
+                return Some(HitTarget::ZekiPoke);
+            }
+            if cl.listen_btn.contains(x, y) {
+                return Some(HitTarget::CicadaToggleListen);
+            }
+            if cl.mic_btn.contains(x, y) {
+                return Some(HitTarget::CicadaToggleMic);
+            }
+            if cl.reply_btn.contains(x, y) {
+                return Some(HitTarget::CicadaQuickReply);
+            }
+            if cl.sub_bar_btn.contains(x, y) {
+                return Some(HitTarget::CicadaToggleSubtitleBar);
+            }
+            if cl.lang_btn.contains(x, y) {
+                return Some(HitTarget::CicadaCycleLang);
+            }
+            if cl.orig_btn.contains(x, y) {
+                return Some(HitTarget::CicadaToggleOriginal);
+            }
+            if cl.size_btn.contains(x, y) {
+                return Some(HitTarget::CicadaToggleSize);
+            }
+            if cl.copy_btn.contains(x, y) && ctx.cicada_has_entries {
+                return Some(HitTarget::CicadaCopyTranscript);
+            }
+            if cl.summary_btn.contains(x, y) && ctx.cicada_has_entries {
+                return Some(HitTarget::CicadaSummarize);
+            }
+            if cl.ask_btn.contains(x, y) {
+                return Some(HitTarget::CicadaAskZeki);
+            }
+            if cl.clear_btn.contains(x, y) && ctx.cicada_has_entries {
+                return Some(HitTarget::CicadaClear);
+            }
+            if cl.card.contains(x, y) {
+                if ctx.cicada_has_quick_reply && y <= cl.card.top + 30.0 {
+                    return Some(HitTarget::CicadaCopyQuickReply);
+                }
+                return Some(HitTarget::CicadaCard);
+            }
+            None
+        }
         ExpandedTab::Zeki => {
             if ZEKI_STAGE_RECT.contains(x, y) {
                 return Some(HitTarget::ZekiPoke);

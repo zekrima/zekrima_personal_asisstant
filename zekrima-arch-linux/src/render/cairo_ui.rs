@@ -19,20 +19,24 @@ use gtk4::pango;
 use gtk4::prelude::*;
 
 use crate::layout::{CANVAS_HEIGHT_LOGICAL, CANVAS_WIDTH_LOGICAL, PILL_TOP_LOGICAL};
+use crate::render::spring::{AUTO_HIDDEN_HEIGHT, COLLAPSED_HEIGHT};
 use crate::render::widgets::{
-    app_accent_rgb, app_initial, chat_layout, clip_row_rect, control_rect, expansion_progress,
-    format_relative_time, notif_card_dismiss_rect, notif_card_rect, smoothstep,
-    tab_rect_for_width, timer_preset_rect, zeki_state_btn_rect, ExpandedTab, HitTarget, RectF,
-    ALL_TABS, ARTIST_BOX, CLIP_CLEAR_BTN, CLIP_MAX_VISIBLE, COLLAPSED_ART, CONTROLS_TOP,
-    EQUALIZER_BAR_COUNT, EQUALIZER_BAR_GAP, EQUALIZER_BAR_WIDTH, EQUALIZER_RIGHT, EXPANDED_ART,
-    MEDIA_CLOCK_BOX, NOTIF_CARD_MAX_VISIBLE, NOTIF_CLEAR_BTN, TIMER_PROGRESS_BAR, TIMER_RESET_BTN,
-    TIMER_TOGGLE_BTN, TITLE_BOX, TOAST_AVATAR, TOAST_DISMISS_BTN, TOAST_PROGRESS_RECT,
-    ZEKI_CFG_BTN_CHAT, ZEKI_CFG_BTN_PREVIEW, ZEKI_CHAT_BTN_PREVIEW, ZEKI_DOCK_CHAT_BTN,
-    ZEKI_DOCK_MIC_BTN, ZEKI_DOCK_PRIVACY_BTN, ZEKI_DOCK_RECT, ZEKI_MIC_BTN_CHAT,
-    ZEKI_MIC_BTN_PREVIEW, ZEKI_PRIVACY_BTN_CHAT, ZEKI_PRIVACY_BTN_PREVIEW, ZEKI_STAGE_RECT,
+    app_accent_rgb, app_initial, chat_layout, cicada_bar_layout, cicada_panel_layout,
+    clip_row_rect, control_rect, expansion_progress, format_relative_time,
+    notif_card_dismiss_rect, notif_card_rect, smoothstep, tab_rect_for_width, timer_preset_rect,
+    zeki_state_btn_rect, ExpandedTab, HitTarget, RectF, ALL_TABS, ARTIST_BOX, CLIP_CLEAR_BTN,
+    CLIP_MAX_VISIBLE, COLLAPSED_ART, CONTROLS_TOP, EQUALIZER_BAR_COUNT, EQUALIZER_BAR_GAP,
+    EQUALIZER_BAR_WIDTH, EQUALIZER_RIGHT, EXPANDED_ART, MEDIA_CLOCK_BOX, NOTIF_CARD_MAX_VISIBLE,
+    NOTIF_CLEAR_BTN, TIMER_PROGRESS_BAR, TIMER_RESET_BTN, TIMER_TOGGLE_BTN, TITLE_BOX,
+    TOAST_AVATAR, TOAST_DISMISS_BTN, TOAST_PROGRESS_RECT, ZEKI_CFG_BTN_CHAT, ZEKI_CFG_BTN_PREVIEW,
+    ZEKI_CHAT_BTN_PREVIEW, ZEKI_DOCK_CHAT_BTN, ZEKI_DOCK_MIC_BTN, ZEKI_DOCK_PRIVACY_BTN,
+    ZEKI_DOCK_RECT, ZEKI_MIC_BTN_CHAT, ZEKI_MIC_BTN_PREVIEW, ZEKI_PRIVACY_BTN_CHAT,
+    ZEKI_PRIVACY_BTN_PREVIEW, ZEKI_STAGE_RECT,
 };
 use crate::render::zeki::{ZekiEngine, ALL_ZEKI_STATES};
 use crate::services::assistant::{AssistantPhase, AssistantSnapshot};
+use crate::services::cicada::{CicadaSnapshot, SpeakerChannel};
+use crate::services::config::cicada_lang_short_badge;
 use crate::services::media::{MediaControl, MediaInfo};
 use crate::services::notifications::{NotificationItem, NotificationSnapshot};
 use crate::services::pomodoro::{PomodoroTimer, TIMER_PRESETS_SECS};
@@ -69,12 +73,19 @@ pub struct Frame<'a> {
     pub chat_attached_label: Option<&'a str>,
     pub ptt_hotkey_short: &'a str,
     pub auto_hidden: bool,
+    pub cicada: &'a CicadaSnapshot,
+    pub cicada_audio_level: f32,
+    pub cicada_subtitle_bar: bool,
+    pub cicada_click_through: bool,
+    pub cicada_scroll_offset: f32,
+    pub cicada_copied_flash: bool,
 }
 
 pub struct CairoRenderer {
     art_revision: u64,
     art_pixbuf: Option<Pixbuf>,
     last_chat_max_scroll: f32,
+    last_cicada_max_scroll: f32,
 }
 
 impl CairoRenderer {
@@ -83,11 +94,16 @@ impl CairoRenderer {
             art_revision: 0,
             art_pixbuf: None,
             last_chat_max_scroll: 0.0,
+            last_cicada_max_scroll: 0.0,
         }
     }
 
     pub fn last_chat_max_scroll(&self) -> f32 {
         self.last_chat_max_scroll
+    }
+
+    pub fn last_cicada_max_scroll(&self) -> f32 {
+        self.last_cicada_max_scroll
     }
 
     pub fn prepare_art(&mut self, media: &MediaInfo) {
@@ -112,24 +128,46 @@ impl CairoRenderer {
         let _ = cr.paint();
         cr.set_operator(cairo::Operator::Over);
 
-        if frame.auto_hidden {
-            // Subtle thin reveal strip at very top center so user knows where to hover
-            let strip_w = 72.0;
-            let sx = (CANVAS_WIDTH_LOGICAL as f64 - strip_w) / 2.0;
-            rounded_rect_path(cr, sx, 1.0, strip_w, 3.0, 1.5);
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.16);
-            let _ = cr.fill();
-            return;
-        }
-
         let width = frame.width.clamp(1.0, CANVAS_WIDTH_LOGICAL) as f64;
         let height = frame.height.clamp(1.0, CANVAS_HEIGHT_LOGICAL) as f64;
         let radius = (frame.radius as f64).clamp(0.0, width.min(height) / 2.0);
         let left = (CANVAS_WIDTH_LOGICAL as f64 - width) / 2.0;
-        let top = PILL_TOP_LOGICAL as f64;
+        let tuck = ((COLLAPSED_HEIGHT - frame.height)
+            / (COLLAPSED_HEIGHT - AUTO_HIDDEN_HEIGHT))
+            .clamp(0.0, 1.0) as f64;
+        let top = (PILL_TOP_LOGICAL as f64) * (1.0 - tuck);
+
+        if height < 20.0 || frame.auto_hidden && height < 22.0 {
+            let handle_h = height.max(4.5);
+            let handle_r = (handle_h / 2.0).min(radius.max(2.25));
+            let handle_top = (top - handle_r * 0.35).max(0.0);
+            rounded_rect_path(cr, left, handle_top, width, handle_h, handle_r);
+            cr.set_source_rgba(12.0 / 255.0, 12.0 / 255.0, 16.0 / 255.0, 0.86);
+            let _ = cr.fill_preserve();
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.16);
+            cr.set_line_width(0.8);
+            let _ = cr.stroke();
+
+            let grip_w = (width * 0.34).clamp(28.0, 48.0);
+            let grip_left = left + (width - grip_w) / 2.0;
+            let grip_y = top + (handle_h - 1.5) * 0.55;
+            rounded_rect_path(cr, grip_left, grip_y, grip_w, 1.5, 0.75);
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.40);
+            let _ = cr.fill();
+            return;
+        }
 
         rounded_rect_path(cr, left, top, width, height, radius);
-        cr.set_source_rgba(10.0 / 255.0, 10.0 / 255.0, 13.0 / 255.0, 0.96);
+        if frame.cicada_subtitle_bar && !frame.expanded {
+            cr.set_source_rgba(
+                10.0 / 255.0,
+                12.0 / 255.0,
+                16.0 / 255.0,
+                if frame.cicada_click_through { 0.80 } else { 0.88 },
+            );
+        } else {
+            cr.set_source_rgba(10.0 / 255.0, 10.0 / 255.0, 13.0 / 255.0, 0.96);
+        }
         let _ = cr.fill();
 
         let now = std::time::Instant::now();
@@ -146,6 +184,9 @@ impl CairoRenderer {
                     cr.set_source_rgba(r, g, b, 0.65);
                     let _ = cr.fill();
                 }
+            } else if frame.cicada.active && (!frame.expanded || frame.expanded_tab == ExpandedTab::Cicada) {
+                cr.set_source_rgba(0.16, 0.86, 0.62, 0.85);
+                let _ = cr.fill();
             } else if frame.expanded && frame.expanded_tab == ExpandedTab::Zeki
                 || frame.zeki.state().is_assistant_active()
             {
@@ -177,6 +218,8 @@ impl CairoRenderer {
                 let progress = frame.notification.toast_progress(now);
                 self.draw_notification_toast(cr, left, top, toast, progress, frame.hovered_target);
             }
+        } else if frame.cicada_subtitle_bar && !frame.expanded {
+            self.draw_cicada_subtitle_bar(cr, left, top, width as f32, height as f32, frame);
         } else if frame.expanded || expanded_progress >= 0.28 {
             let alpha = smoothstep(((expanded_progress - 0.15) / 0.85).clamp(0.0, 1.0)) as f64;
             if alpha > 0.01 {
@@ -184,6 +227,9 @@ impl CairoRenderer {
                 match frame.expanded_tab {
                     ExpandedTab::Zeki => {
                         self.draw_zeki_panel(cr, left, top, width as f32, height as f32, frame, alpha);
+                    }
+                    ExpandedTab::Cicada => {
+                        self.draw_cicada_panel(cr, left, top, width as f32, height as f32, frame, alpha);
                     }
                     ExpandedTab::Media => {
                         if frame.media.has_session {
@@ -230,13 +276,15 @@ impl CairoRenderer {
                         );
                     }
                 }
-                if frame.expanded_tab != ExpandedTab::Zeki {
+                if !matches!(frame.expanded_tab, ExpandedTab::Zeki | ExpandedTab::Cicada) {
                     draw_zeki_companion_dock(cr, left, top, frame, alpha);
                 }
             }
         } else {
             let collapsed_alpha = (1.0 - expanded_progress * 3.5).clamp(0.0, 1.0) as f64;
-            if frame.zeki.state().is_assistant_active() {
+            if frame.cicada.active || frame.cicada.quick_reply_recording {
+                self.draw_collapsed_cicada(cr, left, top, width, height, frame, collapsed_alpha);
+            } else if frame.zeki.state().is_assistant_active() {
                 self.draw_collapsed_assistant(cr, left, top, width, height, frame, collapsed_alpha);
             } else if frame.media.has_session {
                 self.draw_collapsed_media(cr, left, top, width, height, frame, collapsed_alpha);
@@ -251,6 +299,601 @@ impl CairoRenderer {
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
         cr.set_line_width(1.0);
         let _ = cr.stroke();
+    }
+
+    fn draw_collapsed_cicada(
+        &self,
+        cr: &cairo::Context,
+        ox: f64,
+        oy: f64,
+        pill_w: f64,
+        pill_h: f64,
+        frame: &Frame,
+        alpha: f64,
+    ) {
+        frame.zeki.draw(cr, ox + 22.0, oy + pill_h / 2.0 + 1.0, 11.0, alpha, true);
+
+        let blink = ((std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+            / 500)
+            % 2)
+            == 0;
+        let (dr, dg, db) = if frame.cicada.quick_reply_recording {
+            (0.98, 0.72, 0.22)
+        } else {
+            (0.16, 0.88, 0.62)
+        };
+        cr.arc(ox + 42.0, oy + pill_h / 2.0, 3.6, 0.0, 2.0 * PI);
+        cr.set_source_rgba(dr, dg, db, if blink { 0.98 } else { 0.40 } * alpha);
+        let _ = cr.fill();
+
+        let tag = if frame.cicada.quick_reply_recording {
+            format!("Reply→{}", cicada_lang_short_badge(&frame.cicada.reply_lang))
+        } else if frame.cicada.pending_segments > 0 {
+            format!("{} …", frame.cicada.lang_pair_badge())
+        } else {
+            frame.cicada.lang_pair_badge()
+        };
+        draw_text_centered_v(
+            cr,
+            &tag,
+            ox + 52.0,
+            oy,
+            96.0,
+            pill_h,
+            12.0,
+            true,
+            pango::Alignment::Left,
+            (0.72, 0.98, 0.88, 0.96 * alpha),
+        );
+
+        let level = frame.cicada_audio_level.clamp(0.08, 1.0) as f64;
+        let bar_w = 3.0;
+        let gap = 3.0;
+        let right_edge = ox + pill_w - 16.0;
+        let cy = oy + pill_h / 2.0;
+        let weights = [0.50f64, 0.82, 1.0, 0.78, 0.46];
+        cr.set_source_rgba(dr, dg, db, 0.92 * alpha);
+        for (i, &w_mul) in weights.iter().enumerate() {
+            let bh = (4.0 + 14.0 * level * w_mul).clamp(4.0, 18.0);
+            let bx = right_edge - (4 - i) as f64 * (bar_w + gap) - bar_w;
+            rounded_rect_path(cr, bx, cy - bh / 2.0, bar_w, bh, bar_w / 2.0);
+            let _ = cr.fill();
+        }
+    }
+
+    fn draw_cicada_subtitle_bar(
+        &self,
+        cr: &cairo::Context,
+        ox: f64,
+        oy: f64,
+        pill_w: f32,
+        pill_h: f32,
+        frame: &Frame,
+    ) {
+        let bl = cicada_bar_layout(pill_w, pill_h);
+        let hovered = frame.hovered_target;
+
+        frame.zeki.draw(
+            cr,
+            ox + bl.zeki_center.0 as f64,
+            oy + bl.zeki_center.1 as f64,
+            19.0,
+            1.0,
+            false,
+        );
+
+        let status_txt = if frame.cicada.quick_reply_recording {
+            format!(
+                "● Quick-Reply (→{}) — Bicara sekarang...",
+                cicada_lang_short_badge(&frame.cicada.reply_lang)
+            )
+        } else if frame.cicada.quick_reply_busy {
+            "● Menerjemahkan Quick-Reply...".to_string()
+        } else if let Some(err) = &frame.cicada.error {
+            format!("! {err}")
+        } else {
+            let mic_tag = if frame.cicada.mic_enabled { " + Mic" } else { "" };
+            let pend = if frame.cicada.pending_segments > 0 { " · …" } else { "" };
+            format!("● LIVE {} {mic_tag}{pend}", frame.cicada.lang_pair_badge())
+        };
+        let st_col = if frame.cicada.error.is_some() {
+            (0.98, 0.44, 0.52, 0.95)
+        } else if frame.cicada.quick_reply_recording {
+            (0.98, 0.76, 0.25, 0.95)
+        } else {
+            (0.24, 0.90, 0.68, 0.95)
+        };
+        draw_text(
+            cr,
+            &status_txt,
+            ox + 66.0,
+            oy + 11.0,
+            (bl.reply_btn.left - 70.0).max(80.0) as f64,
+            10.5,
+            true,
+            pango::Alignment::Left,
+            st_col,
+        );
+
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            bl.reply_btn,
+            if frame.cicada.quick_reply_recording { "● Stop" } else { "Reply" },
+            (0.98, 0.72, 0.22),
+            hovered == Some(HitTarget::CicadaQuickReply),
+            frame.cicada.quick_reply_recording,
+            1.0,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            bl.pass_btn,
+            if frame.cicada_click_through { "Unlock" } else { "Pass" },
+            (0.38, 0.76, 0.98),
+            hovered == Some(HitTarget::CicadaToggleClickThrough),
+            frame.cicada_click_through,
+            1.0,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            bl.expand_btn,
+            "Full",
+            (0.68, 0.74, 0.85),
+            hovered == Some(HitTarget::CicadaExpandFromBar),
+            false,
+            1.0,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            bl.stop_btn,
+            if frame.cicada.active { "Stop" } else { "Start" },
+            (0.94, 0.30, 0.38),
+            hovered == Some(HitTarget::CicadaToggleListen),
+            frame.cicada.active,
+            1.0,
+        );
+
+        let tx = ox + bl.text_rect.left as f64;
+        let ty = oy + bl.text_rect.top as f64;
+        let tw = bl.text_rect.width().max(120.0) as f64;
+
+        if let Some(latest) = frame.cicada.entries.last() {
+            let mut y_cur = ty;
+            if frame.cicada.show_original && !latest.original.eq_ignore_ascii_case(&latest.translation) {
+                let orig_line = format!("[{}] {}", latest.speaker.tag(), latest.original);
+                draw_text(
+                    cr,
+                    &orig_line,
+                    tx,
+                    y_cur,
+                    tw,
+                    10.5,
+                    false,
+                    pango::Alignment::Left,
+                    (0.76, 0.82, 0.90, 0.72),
+                );
+                y_cur += 16.0;
+            }
+            let trans = if latest.speaker == SpeakerChannel::QuickReply {
+                format!("💬 {}", latest.translation)
+            } else {
+                latest.translation.clone()
+            };
+            let tr_col = match latest.speaker {
+                SpeakerChannel::Online => (1.0, 1.0, 1.0, 0.99),
+                SpeakerChannel::You => (0.62, 0.98, 0.80, 0.99),
+                SpeakerChannel::QuickReply => (1.0, 0.88, 0.55, 0.99),
+            };
+            let layout = pangocairo::functions::create_layout(cr);
+            let mut desc = pango::FontDescription::from_string("Sans Bold");
+            desc.set_absolute_size(12.2 * pango::SCALE as f64);
+            layout.set_font_description(Some(&desc));
+            layout.set_width((tw * pango::SCALE as f64) as i32);
+            layout.set_wrap(pango::WrapMode::WordChar);
+            layout.set_text(&trans);
+            cr.set_source_rgba(tr_col.0, tr_col.1, tr_col.2, tr_col.3);
+            cr.move_to(tx, y_cur);
+            pangocairo::functions::show_layout(cr, &layout);
+        } else {
+            let waiting = if frame.cicada.active {
+                "Mendengarkan audio sistem PipeWire (@DEFAULT_MONITOR@)... subtitle akan muncul otomatis."
+            } else {
+                "Cicada Subtitle Bar siap. Klik Start untuk mulai menerjemahkan audio rapat."
+            };
+            draw_text(
+                cr,
+                waiting,
+                tx,
+                ty + 10.0,
+                tw,
+                11.0,
+                false,
+                pango::Alignment::Left,
+                (0.78, 0.84, 0.92, 0.72),
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_cicada_panel(
+        &mut self,
+        cr: &cairo::Context,
+        ox: f64,
+        oy: f64,
+        pill_w: f32,
+        pill_h: f32,
+        frame: &Frame,
+        alpha: f64,
+    ) {
+        let cl = cicada_panel_layout(pill_w, pill_h);
+        let hovered = frame.hovered_target;
+
+        // Left Zeki Taking-Notes Stage
+        let (er, eg, eb) = if frame.cicada.active {
+            (0.16, 0.86, 0.62)
+        } else {
+            (0.24, 0.74, 0.96)
+        };
+        rounded_rect_path(
+            cr,
+            ox + cl.zeki_stage.left as f64,
+            oy + cl.zeki_stage.top as f64,
+            cl.zeki_stage.width() as f64,
+            cl.zeki_stage.height() as f64,
+            16.0,
+        );
+        cr.set_source_rgba(er, eg, eb, 0.10 * alpha);
+        let _ = cr.fill_preserve();
+        cr.set_source_rgba(er, eg, eb, 0.36 * alpha);
+        cr.set_line_width(1.0);
+        let _ = cr.stroke();
+
+        let (scx, scy) = cl.zeki_stage.center();
+        frame.zeki.draw(
+            cr,
+            ox + scx as f64 - 4.0,
+            oy + scy as f64 + 2.0,
+            23.0,
+            alpha,
+            false,
+        );
+
+        if frame.cicada.active {
+            draw_text(
+                cr,
+                "● LIVE",
+                ox + cl.zeki_stage.left as f64 + 6.0,
+                oy + cl.zeki_stage.top as f64 + 5.0,
+                54.0,
+                9.5,
+                true,
+                pango::Alignment::Left,
+                (0.18, 0.92, 0.65, 0.95 * alpha),
+            );
+        }
+
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.listen_btn,
+            if frame.cicada.active { "■ Stop Live" } else { "▶ Start Live" },
+            if frame.cicada.active { (0.94, 0.30, 0.38) } else { (0.16, 0.86, 0.62) },
+            hovered == Some(HitTarget::CicadaToggleListen),
+            frame.cicada.active,
+            alpha,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.mic_btn,
+            if frame.cicada.mic_enabled { "Mic: ON" } else { "Mic: OFF" },
+            (0.22, 0.82, 0.94),
+            hovered == Some(HitTarget::CicadaToggleMic),
+            frame.cicada.mic_enabled,
+            alpha,
+        );
+        let reply_lbl = if frame.cicada.quick_reply_recording {
+            "● Stop Reply".to_string()
+        } else if frame.cicada.quick_reply_busy {
+            "Translating...".to_string()
+        } else {
+            format!("Reply →{}", cicada_lang_short_badge(&frame.cicada.reply_lang))
+        };
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.reply_btn,
+            &reply_lbl,
+            (0.98, 0.72, 0.22),
+            hovered == Some(HitTarget::CicadaQuickReply),
+            frame.cicada.quick_reply_recording,
+            alpha,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.sub_bar_btn,
+            "Subtitle Bar",
+            (0.65, 0.56, 0.98),
+            hovered == Some(HitTarget::CicadaToggleSubtitleBar),
+            frame.cicada_subtitle_bar,
+            alpha,
+        );
+
+        let hdr = if frame.cicada.glossary_count > 0 {
+            format!(
+                "Cicada Live · {} · {} terms",
+                frame.cicada.lang_pair_badge(),
+                frame.cicada.glossary_count
+            )
+        } else {
+            format!("Cicada Live · {}", frame.cicada.lang_pair_badge())
+        };
+        draw_text(
+            cr,
+            &hdr,
+            ox + cl.card.left as f64 + 2.0,
+            oy + 47.0,
+            (cl.lang_btn.left - cl.card.left - 6.0).max(80.0) as f64,
+            12.0,
+            true,
+            pango::Alignment::Left,
+            (1.0, 1.0, 1.0, 0.95 * alpha),
+        );
+
+        let lang_lbl = format!("→ {}", cicada_lang_short_badge(&frame.cicada.target_lang));
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.lang_btn,
+            &lang_lbl,
+            (0.16, 0.86, 0.62),
+            hovered == Some(HitTarget::CicadaCycleLang),
+            true,
+            alpha,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.orig_btn,
+            if frame.cicada.show_original { "Orig ON" } else { "Orig OFF" },
+            (0.38, 0.74, 0.98),
+            hovered == Some(HitTarget::CicadaToggleOriginal),
+            frame.cicada.show_original,
+            alpha,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.size_btn,
+            if pill_w > 600.0 { "Small" } else { "Wide" },
+            (0.68, 0.74, 0.85),
+            hovered == Some(HitTarget::CicadaToggleSize),
+            false,
+            alpha,
+        );
+
+        // Scrollable Transcript Card
+        let cx = ox + cl.card.left as f64;
+        let cy = oy + cl.card.top as f64;
+        let cw = cl.card.width() as f64;
+        let ch = cl.card.height() as f64;
+
+        rounded_rect_path(cr, cx, cy, cw, ch, 14.0);
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.045 * alpha);
+        let _ = cr.fill_preserve();
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.11 * alpha);
+        cr.set_line_width(1.0);
+        let _ = cr.stroke();
+
+        let _ = cr.save();
+        cr.rectangle(cx + 6.0, cy + 6.0, (cw - 12.0).max(10.0), (ch - 12.0).max(10.0));
+        cr.clip();
+
+        let inner_w = (cw - 24.0).max(120.0);
+        let view_h = (ch - 12.0).max(40.0);
+
+        if let Some(err) = &frame.cicada.error {
+            let layout = pangocairo::functions::create_layout(cr);
+            let mut desc = pango::FontDescription::from_string("Sans");
+            desc.set_absolute_size(11.2 * pango::SCALE as f64);
+            layout.set_font_description(Some(&desc));
+            layout.set_width((inner_w * pango::SCALE as f64) as i32);
+            layout.set_wrap(pango::WrapMode::WordChar);
+            layout.set_text(&format!("Cicada Notice:\n{err}"));
+            cr.set_source_rgba(0.98, 0.54, 0.58, 0.95 * alpha);
+            cr.move_to(cx + 10.0, cy + 10.0);
+            pangocairo::functions::show_layout(cr, &layout);
+            self.last_cicada_max_scroll = 0.0;
+        } else if frame.cicada.entries.is_empty() {
+            let msg = if frame.cicada.active {
+                "Menunggu suara rapat dari PipeWire (@DEFAULT_MONITOR@)...\n\n• Klik 'Subtitle Bar' untuk tampilan bar tipis click-through.\n• Nyalakan 'Mic: ON' untuk transkrip 2 arah.\n• Klik 'Reply' untuk bicara dan langsung diterjemahkan."
+            } else {
+                "Cicada Mode — Live Meeting Translator\n\nKlik '▶ Start Live' untuk menangkap audio sistem tanpa bot rapat.\nAtur bahasa target & Custom Glossary lewat Config."
+            };
+            let layout = pangocairo::functions::create_layout(cr);
+            let mut desc = pango::FontDescription::from_string("Sans");
+            desc.set_absolute_size(11.0 * pango::SCALE as f64);
+            layout.set_font_description(Some(&desc));
+            layout.set_width((inner_w * pango::SCALE as f64) as i32);
+            layout.set_wrap(pango::WrapMode::WordChar);
+            layout.set_text(msg);
+            cr.set_source_rgba(0.80, 0.85, 0.92, 0.72 * alpha);
+            cr.move_to(cx + 10.0, cy + 10.0);
+            pangocairo::functions::show_layout(cr, &layout);
+            self.last_cicada_max_scroll = 0.0;
+        } else {
+            struct Measured {
+                header: String,
+                orig: Option<pango::Layout>,
+                orig_h: f64,
+                trans: pango::Layout,
+                speaker: SpeakerChannel,
+                total_h: f64,
+            }
+
+            let mut orig_desc = pango::FontDescription::from_string("Sans");
+            orig_desc.set_absolute_size(10.5 * pango::SCALE as f64);
+            let mut tr_desc = pango::FontDescription::from_string("Sans Bold");
+            tr_desc.set_absolute_size(12.0 * pango::SCALE as f64);
+
+            let mut items = Vec::with_capacity(frame.cicada.entries.len());
+            let mut total_h = 0.0f64;
+            for entry in &frame.cicada.entries {
+                let header = format!(
+                    "{}  {}  {}→{}",
+                    entry.timestamp_label(),
+                    entry.speaker.tag(),
+                    cicada_lang_short_badge(&entry.source_lang),
+                    cicada_lang_short_badge(&entry.target_lang),
+                );
+                let (orig, orig_h) = if frame.cicada.show_original
+                    && !entry.original.eq_ignore_ascii_case(&entry.translation)
+                {
+                    let l = pangocairo::functions::create_layout(cr);
+                    l.set_font_description(Some(&orig_desc));
+                    l.set_width(((inner_w - 8.0) * pango::SCALE as f64) as i32);
+                    l.set_wrap(pango::WrapMode::WordChar);
+                    l.set_text(&entry.original);
+                    let (_, h) = l.pixel_size();
+                    (Some(l), h as f64 + 2.0)
+                } else {
+                    (None, 0.0)
+                };
+
+                let trans = pangocairo::functions::create_layout(cr);
+                trans.set_font_description(Some(&tr_desc));
+                trans.set_width(((inner_w - 8.0) * pango::SCALE as f64) as i32);
+                trans.set_wrap(pango::WrapMode::WordChar);
+                trans.set_text(&entry.translation);
+                let (_, th) = trans.pixel_size();
+
+                let bh = 16.0 + orig_h + th as f64 + 10.0;
+                total_h += bh;
+                items.push(Measured {
+                    header,
+                    orig,
+                    orig_h,
+                    trans,
+                    speaker: entry.speaker,
+                    total_h: bh,
+                });
+            }
+
+            let max_s = (total_h - view_h).max(0.0);
+            self.last_cicada_max_scroll = max_s as f32;
+            let scroll = (frame.cicada_scroll_offset as f64).clamp(0.0, max_s);
+
+            let mut cur_y = cy + 8.0 - scroll;
+            for item in &items {
+                if cur_y + item.total_h >= cy - 40.0 && cur_y <= cy + ch + 40.0 {
+                    let (sr, sg, sb) = match item.speaker {
+                        SpeakerChannel::Online => (0.24, 0.80, 0.98),
+                        SpeakerChannel::You => (0.22, 0.88, 0.62),
+                        SpeakerChannel::QuickReply => (0.98, 0.76, 0.25),
+                    };
+                    rounded_rect_path(cr, cx + 10.0, cur_y + 2.0, 2.5, item.total_h - 8.0, 1.2);
+                    cr.set_source_rgba(sr, sg, sb, 0.85 * alpha);
+                    let _ = cr.fill();
+
+                    draw_text(
+                        cr,
+                        &item.header,
+                        cx + 18.0,
+                        cur_y,
+                        inner_w - 8.0,
+                        10.2,
+                        true,
+                        pango::Alignment::Left,
+                        (sr, sg, sb, 0.92 * alpha),
+                    );
+                    let mut ty = cur_y + 15.0;
+                    if let Some(ol) = &item.orig {
+                        cr.set_source_rgba(0.75, 0.80, 0.88, 0.68 * alpha);
+                        cr.move_to(cx + 18.0, ty);
+                        pangocairo::functions::show_layout(cr, ol);
+                        ty += item.orig_h;
+                    }
+                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.97 * alpha);
+                    cr.move_to(cx + 18.0, ty);
+                    pangocairo::functions::show_layout(cr, &item.trans);
+                }
+                cur_y += item.total_h;
+            }
+
+            if max_s > 1.0 {
+                let track_h = view_h - 4.0;
+                let thumb_h = (track_h * (view_h / total_h)).clamp(18.0, track_h);
+                let thumb_y = cy + 8.0 + (scroll / max_s) * (track_h - thumb_h);
+                rounded_rect_path(cr, cx + cw - 6.0, thumb_y, 3.0, thumb_h, 1.5);
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.28 * alpha);
+                let _ = cr.fill();
+            }
+        }
+        let _ = cr.restore();
+
+        let has_entries = frame.cicada.has_entries();
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.copy_btn,
+            if frame.cicada_copied_flash { "Copied!" } else { "Copy MD" },
+            (0.20, 0.85, 0.56),
+            has_entries && hovered == Some(HitTarget::CicadaCopyTranscript),
+            frame.cicada_copied_flash,
+            if has_entries { alpha } else { alpha * 0.42 },
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.summary_btn,
+            "Auto-Summary",
+            (0.65, 0.55, 0.98),
+            has_entries && hovered == Some(HitTarget::CicadaSummarize),
+            false,
+            if has_entries { alpha } else { alpha * 0.42 },
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.ask_btn,
+            "Ask Zeki",
+            (0.22, 0.74, 0.97),
+            hovered == Some(HitTarget::CicadaAskZeki),
+            true,
+            alpha,
+        );
+        draw_tinted_pill(
+            cr,
+            ox,
+            oy,
+            cl.clear_btn,
+            "Clear",
+            (0.94, 0.34, 0.42),
+            has_entries && hovered == Some(HitTarget::CicadaClear),
+            false,
+            if has_entries { alpha } else { alpha * 0.42 },
+        );
     }
 
     fn draw_collapsed_assistant(
@@ -1627,6 +2270,8 @@ fn draw_tab_bar(
 
         let accent = if tab == ExpandedTab::Zeki {
             (zr, zg, zb)
+        } else if tab == ExpandedTab::Cicada {
+            (0.16, 0.86, 0.62)
         } else {
             ACCENT_RED
         };
@@ -1645,6 +2290,13 @@ fn draw_tab_bar(
 
         let label = match tab {
             ExpandedTab::Zeki => "Zeki".to_string(),
+            ExpandedTab::Cicada => {
+                if frame.cicada.active {
+                    "● Live".to_string()
+                } else {
+                    "Live".to_string()
+                }
+            }
             ExpandedTab::Media => "Media".to_string(),
             ExpandedTab::Timer => {
                 if frame.timer.running {

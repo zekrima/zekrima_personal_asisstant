@@ -34,6 +34,16 @@ const SLEEP_AFTER_SECS: u64 = 15 * 60;
 /// Duration of automatic `Happy` celebration before returning to `Idle`.
 const AUTO_HAPPY_DURATION: Duration = Duration::from_millis(2200);
 
+/// Cicada Mode visual accessories for Zeki (`CIcada_planning.md` Section 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZekiCicadaAccessory {
+    None,
+    /// Standby / Listening & Live Subtitle Bar: Zeki wears a sleek headset whose earcups pulse to audio.
+    Headset,
+    /// Expanded Transcript: Zeki wears headset and holds a tiny animated notebook & pen (taking notes).
+    TakingNotes,
+}
+
 /// Seven core animation states defined in the Zekrima Assistant plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZekiState {
@@ -193,6 +203,11 @@ pub struct ZekiEngine {
     live_voice_level: Option<f32>,
     voice_level: f32,
 
+    // Cicada Mode (Live Meeting Translator) visual state
+    cicada_accessory: ZekiCicadaAccessory,
+    cicada_audio_level: f32,
+    nod_timer: f32,
+
     // Spark particles for Happy/poke celebrations
     sparks: Vec<SparkParticle>,
 
@@ -234,6 +249,9 @@ impl ZekiEngine {
             dance_level: 0.0,
             live_voice_level: None,
             voice_level: 0.0,
+            cicada_accessory: ZekiCicadaAccessory::None,
+            cicada_audio_level: 0.0,
+            nod_timer: 0.0,
             sparks: Vec::new(),
             rng_state: 0x5A45_4B49, // "ZEKI"
         }
@@ -249,11 +267,28 @@ impl ZekiEngine {
 
     pub fn is_high_energy(&self) -> bool {
         self.state.is_high_energy()
+            || self.cicada_accessory != ZekiCicadaAccessory::None
             || self.hop_timer > 0.0
+            || self.nod_timer > 0.0
             || self.shake_timer > 0.0
             || self.peek_timer > 0.0
             || !self.sparks.is_empty()
             || self.dance_level > 0.02
+    }
+
+    /// Updates Zeki's Cicada Mode accessory (Headset / TakingNotes) and live audio rhythm level.
+    pub fn set_cicada_mode(&mut self, accessory: ZekiCicadaAccessory, audio_level: f32) {
+        self.cicada_accessory = accessory;
+        self.cicada_audio_level = audio_level.clamp(0.0, 1.0);
+        if accessory != ZekiCicadaAccessory::None {
+            self.last_interaction = Instant::now();
+        }
+    }
+
+    /// Gentle head nod impulse when a new translated subtitle line arrives in Cicada Mode.
+    pub fn trigger_nod(&mut self) {
+        self.nod_timer = 0.55;
+        self.last_interaction = Instant::now();
     }
 
     pub fn set_dancing(&mut self, playing: bool) {
@@ -511,6 +546,9 @@ impl ZekiEngine {
         if self.shake_timer > 0.0 {
             self.shake_timer = (self.shake_timer - dt).max(0.0);
         }
+        if self.nod_timer > 0.0 {
+            self.nod_timer = (self.nod_timer - dt).max(0.0);
+        }
 
         // Body posture targets per state
         let mut target_oy = (self.elapsed * 2.1).sin() * 0.055; // Gentle ambient float
@@ -599,6 +637,21 @@ impl ZekiEngine {
         if self.shake_timer > 0.0 {
             let decay = (self.shake_timer / 0.55).clamp(0.0, 1.0);
             target_ox += (self.elapsed * 42.0).sin() * 0.14 * decay;
+        }
+
+        // Apply gentle nod impulse when a new translated sentence arrives in Cicada Mode
+        if self.nod_timer > 0.0 {
+            let p = 1.0 - (self.nod_timer / 0.55).clamp(0.0, 1.0);
+            let nod = (p * PI * 2.0).sin().max(0.0) * (1.0 - p * 0.45);
+            target_oy += nod * 0.14;
+            target_tilt += nod * 0.08;
+        }
+
+        // Apply subtle audio-reactive sway while wearing Cicada headset
+        if self.cicada_accessory != ZekiCicadaAccessory::None && self.cicada_audio_level > 0.05 {
+            let sway = (self.elapsed * 9.0).sin() * self.cicada_audio_level;
+            target_tilt += sway * 0.06;
+            target_oy -= self.cicada_audio_level * 0.04;
         }
 
         // Apply gentle 112-BPM music dance when media is playing & Zeki is idle
@@ -986,8 +1039,157 @@ impl ZekiEngine {
             _ => {}
         }
 
+        // 6b. Cicada Mode Accessories (Headset + Boom Mic, plus Notebook & Pen in TakingNotes)
+        if self.cicada_accessory != ZekiCicadaAccessory::None {
+            let ear_bob = (self.elapsed * 12.0).sin() * 0.08 * self.cicada_audio_level;
+            let band_col = D2D1_COLOR_F {
+                r: 0.16,
+                g: 0.85,
+                b: 0.62,
+                a: 0.94 * alpha,
+            };
+            // Headband arc over top of Zeki's capsule
+            brush.SetColor(&band_col);
+            draw_arc_stroke(
+                factory,
+                target,
+                brush,
+                round_stroke,
+                pt(-rx * 1.04, -ry * 0.08),
+                pt(rx * 1.04, -ry * 0.08),
+                rx * 1.08,
+                ry * 1.06,
+                D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                (radius * 0.11).clamp(1.5, 3.2),
+            );
+
+            // Left & right earcups (pulse softly with live audio)
+            let cup_w = (radius * 0.24).clamp(2.4, 7.2);
+            let cup_h = (radius * (0.46 + 0.10 * self.cicada_audio_level)).clamp(4.8, 15.0);
+            for side in [-1.0f32, 1.0f32] {
+                let cx_cup = side * (rx * 1.02);
+                let cy_cup = ear_bob * side * radius;
+                let cup = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: cx_cup - cup_w / 2.0,
+                        top: cy_cup - cup_h / 2.0,
+                        right: cx_cup + cup_w / 2.0,
+                        bottom: cy_cup + cup_h / 2.0,
+                    },
+                    radiusX: cup_w * 0.45,
+                    radiusY: cup_w * 0.45,
+                };
+                brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.08,
+                    g: 0.14,
+                    b: 0.16,
+                    a: 0.98 * alpha,
+                });
+                target.FillRoundedRectangle(&cup, brush);
+                brush.SetColor(&band_col);
+                target.DrawRoundedRectangle(&cup, brush, (radius * 0.07).clamp(1.0, 2.0), None);
+            }
+
+            // Sleek boom microphone curving from right earcup toward mouth
+            if !is_mini {
+                let mic_start = pt(rx * 0.96, ry * 0.18);
+                let mic_tip = pt(rx * 0.36, ry * 0.44);
+                brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.72,
+                    g: 0.95,
+                    b: 0.86,
+                    a: 0.88 * alpha,
+                });
+                target.DrawLine(
+                    mic_start,
+                    mic_tip,
+                    brush,
+                    (radius * 0.065).clamp(1.2, 2.0),
+                    round_stroke,
+                );
+                brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.18,
+                    g: 0.92,
+                    b: 0.65,
+                    a: 0.96 * alpha,
+                });
+                target.FillEllipse(
+                    &D2D1_ELLIPSE {
+                        point: mic_tip,
+                        radiusX: (radius * 0.095).clamp(1.8, 3.2),
+                        radiusY: (radius * 0.075).clamp(1.5, 2.6),
+                    },
+                    brush,
+                );
+            }
+        }
+
         // Restore world transform for floating badges & particles (never tilted with body)
         target.SetTransform(&prev_transform);
+
+        // 6c. TakingNotes miniature notebook & animated pen (Expanded Cicada Transcript view)
+        if self.cicada_accessory == ZekiCicadaAccessory::TakingNotes && !is_mini {
+            let nb_w = (radius * 0.62).clamp(13.0, 22.0);
+            let nb_h = (radius * 0.72).clamp(15.0, 26.0);
+            let nb_x = draw_cx + radius * 0.68;
+            let nb_y = draw_cy + radius * 0.24;
+            let nb_rect = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: nb_x,
+                    top: nb_y,
+                    right: nb_x + nb_w,
+                    bottom: nb_y + nb_h,
+                },
+                radiusX: 3.0,
+                radiusY: 3.0,
+            };
+            brush.SetColor(&D2D1_COLOR_F {
+                r: 0.95,
+                g: 0.97,
+                b: 1.0,
+                a: 0.95 * alpha,
+            });
+            target.FillRoundedRectangle(&nb_rect, brush);
+            brush.SetColor(&D2D1_COLOR_F {
+                r: 0.16,
+                g: 0.82,
+                b: 0.62,
+                a: 0.92 * alpha,
+            });
+            target.DrawRoundedRectangle(&nb_rect, brush, 1.3, None);
+
+            // Tiny note lines inside the notebook
+            brush.SetColor(&D2D1_COLOR_F {
+                r: 0.25,
+                g: 0.35,
+                b: 0.48,
+                a: 0.65 * alpha,
+            });
+            for row in 0..3 {
+                let ly = nb_y + 5.0 + row as f32 * (nb_h - 9.0) / 2.5;
+                let lw = if row == 2 { nb_w * 0.52 } else { nb_w * 0.68 };
+                target.DrawLine(
+                    pt(nb_x + 3.0, ly),
+                    pt(nb_x + 3.0 + lw, ly),
+                    brush,
+                    1.2,
+                    round_stroke,
+                );
+            }
+
+            // Animated writing pen bobbing across the notebook
+            let scribble_x = (self.elapsed * 8.5).sin() * 2.4;
+            let scribble_y = (self.elapsed * 4.2).cos() * 1.4;
+            let pen_tip = pt(nb_x + nb_w * 0.62 + scribble_x, nb_y + nb_h * 0.62 + scribble_y);
+            let pen_top = pt(pen_tip.x + 8.5, pen_tip.y - 9.5);
+            brush.SetColor(&D2D1_COLOR_F {
+                r: 0.98,
+                g: 0.72,
+                b: 0.22,
+                a: 0.98 * alpha,
+            });
+            target.DrawLine(pen_tip, pen_top, brush, 2.2, round_stroke);
+        }
 
         // 7. State-specific ambient particles & badges
         match self.state {

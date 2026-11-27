@@ -44,21 +44,24 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 use crate::layout::{CANVAS_HEIGHT_LOGICAL, CANVAS_WIDTH_LOGICAL, PILL_TOP_LOGICAL};
+use crate::render::spring::{AUTO_HIDDEN_HEIGHT, COLLAPSED_HEIGHT};
 use crate::render::widgets::{
-    app_accent_rgb, app_initial, chat_layout, clip_row_rect, control_rect, expansion_progress,
-    format_relative_time, notif_card_dismiss_rect, notif_card_rect, smoothstep, tab_rect_for_width,
-    timer_preset_rect, zeki_state_btn_rect, ExpandedTab, HitTarget, RectF, ALL_TABS, ARTIST_BOX,
-    CLIP_CLEAR_BTN, CLIP_MAX_VISIBLE, COLLAPSED_ART, CONTROLS_TOP, EQUALIZER_BAR_COUNT,
-    EQUALIZER_BAR_GAP, EQUALIZER_BAR_WIDTH, EQUALIZER_RIGHT, EXPANDED_ART, MEDIA_CLOCK_BOX,
-    NOTIF_CARD_MAX_VISIBLE, NOTIF_CLEAR_BTN, NOTIF_SETTINGS_BTN, TIMER_PROGRESS_BAR,
-    TIMER_RESET_BTN, TIMER_TOGGLE_BTN, TITLE_BOX, TOAST_AVATAR, TOAST_DISMISS_BTN,
-    TOAST_PROGRESS_RECT, ZEKI_CFG_BTN_CHAT, ZEKI_CFG_BTN_PREVIEW, ZEKI_CHAT_BTN_PREVIEW,
-    ZEKI_DOCK_CHAT_BTN, ZEKI_DOCK_MIC_BTN, ZEKI_DOCK_PRIVACY_BTN, ZEKI_DOCK_RECT,
-    ZEKI_MIC_BTN_CHAT, ZEKI_MIC_BTN_PREVIEW, ZEKI_PRIVACY_BTN_CHAT, ZEKI_PRIVACY_BTN_PREVIEW,
-    ZEKI_STAGE_RECT,
+    app_accent_rgb, app_initial, chat_layout, cicada_bar_layout, cicada_panel_layout,
+    clip_row_rect, control_rect, expansion_progress, format_relative_time,
+    notif_card_dismiss_rect, notif_card_rect, smoothstep, tab_rect_for_width, timer_preset_rect,
+    zeki_state_btn_rect, ExpandedTab, HitTarget, RectF, ALL_TABS, ARTIST_BOX, CLIP_CLEAR_BTN,
+    CLIP_MAX_VISIBLE, COLLAPSED_ART, CONTROLS_TOP, EQUALIZER_BAR_COUNT, EQUALIZER_BAR_GAP,
+    EQUALIZER_BAR_WIDTH, EQUALIZER_RIGHT, EXPANDED_ART, MEDIA_CLOCK_BOX, NOTIF_CARD_MAX_VISIBLE,
+    NOTIF_CLEAR_BTN, NOTIF_SETTINGS_BTN, TIMER_PROGRESS_BAR, TIMER_RESET_BTN, TIMER_TOGGLE_BTN,
+    TITLE_BOX, TOAST_AVATAR, TOAST_DISMISS_BTN, TOAST_PROGRESS_RECT, ZEKI_CFG_BTN_CHAT,
+    ZEKI_CFG_BTN_PREVIEW, ZEKI_CHAT_BTN_PREVIEW, ZEKI_DOCK_CHAT_BTN, ZEKI_DOCK_MIC_BTN,
+    ZEKI_DOCK_PRIVACY_BTN, ZEKI_DOCK_RECT, ZEKI_MIC_BTN_CHAT, ZEKI_MIC_BTN_PREVIEW,
+    ZEKI_PRIVACY_BTN_CHAT, ZEKI_PRIVACY_BTN_PREVIEW, ZEKI_STAGE_RECT,
 };
 use crate::render::zeki::{create_round_stroke, ZekiEngine, ALL_ZEKI_STATES};
 use crate::services::assistant::{AssistantPhase, AssistantSnapshot};
+use crate::services::cicada::{CicadaSnapshot, SpeakerChannel};
+use crate::services::config::cicada_lang_short_badge;
 use crate::services::media::{AlbumArt, MediaControl, MediaInfo};
 use crate::services::notifications::{NotificationItem, NotificationSnapshot};
 use crate::services::pomodoro::{PomodoroTimer, TIMER_PRESETS_SECS};
@@ -134,7 +137,8 @@ const HOVER_RADIUS: f32 = 16.0;
 const PAUSED_EQUALIZER: [f32; EQUALIZER_BAR_COUNT] = [0.22, 0.45, 0.30, 0.50, 0.25];
 
 pub struct Frame<'a> {
-    pub hidden_visual: bool,
+    pub manual_hidden: bool,
+    pub auto_hidden: bool,
     pub width: f32,
     pub height: f32,
     pub radius: f32,
@@ -160,6 +164,13 @@ pub struct Frame<'a> {
     pub clip_items: &'a [String],
     pub clip_copied_flash: bool,
     pub sys_stats: &'a SystemStats,
+    pub cicada: &'a CicadaSnapshot,
+    pub cicada_audio_level: f32,
+    pub cicada_subtitle_bar: bool,
+    pub cicada_click_through: bool,
+    pub cicada_scroll_y: f32,
+    pub cicada_auto_scroll: bool,
+    pub cicada_copied_flash: bool,
 }
 
 pub struct Renderer {
@@ -221,6 +232,7 @@ pub struct Renderer {
     height: u32,
     dpi: f32,
     last_chat_max_scroll: f32,
+    last_cicada_max_scroll: f32,
 }
 
 impl Renderer {
@@ -523,6 +535,7 @@ impl Renderer {
             height: 0,
             dpi: 0.0,
             last_chat_max_scroll: 0.0,
+            last_cicada_max_scroll: 0.0,
         };
         renderer.resize(width, height, dpi)?;
         Ok(renderer)
@@ -530,6 +543,10 @@ impl Renderer {
 
     pub fn chat_max_scroll(&self) -> f32 {
         self.last_chat_max_scroll
+    }
+
+    pub fn cicada_max_scroll(&self) -> f32 {
+        self.last_cicada_max_scroll
     }
 
     pub unsafe fn resize(&mut self, width: u32, height: u32, dpi: f32) -> Result<()> {
@@ -568,7 +585,7 @@ impl Renderer {
         };
         self.target.Clear(Some(&transparent));
 
-        if frame.hidden_visual {
+        if frame.manual_hidden {
             self.target.EndDraw(None, None)?;
             return self.present(hwnd);
         }
@@ -578,7 +595,102 @@ impl Renderer {
         let radius = frame.radius.clamp(0.0, width.min(height) / 2.0);
 
         let left = (CANVAS_WIDTH_LOGICAL - width) / 2.0;
-        let top = PILL_TOP_LOGICAL;
+        let tuck = ((COLLAPSED_HEIGHT - height) / (COLLAPSED_HEIGHT - AUTO_HIDDEN_HEIGHT))
+            .clamp(0.0, 1.0);
+        let top = PILL_TOP_LOGICAL * (1.0 - tuck);
+
+        // Windows UpdateLayeredWindow ignores mouse input on alpha == 0 pixels.
+        // Paint a visually-invisible (alpha = 2/255) hover-catch strip so moving the cursor
+        // to the top edge always wakes the tucked island and prevents top-bezel bounce.
+        if frame.auto_hidden {
+            let sensor_w = 240.0_f32;
+            let sensor_left = (CANVAS_WIDTH_LOGICAL - sensor_w) / 2.0;
+            let sensor_rect = D2D_RECT_F {
+                left: sensor_left,
+                top: 0.0,
+                right: sensor_left + sensor_w,
+                bottom: 12.0,
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 2.0 / 255.0,
+            });
+            self.target.FillRectangle(&sensor_rect, &self.dynamic_brush);
+        } else if !(frame.cicada_subtitle_bar && frame.cicada_click_through) && top > 0.5 {
+            let bridge_rect = D2D_RECT_F {
+                left,
+                top: 0.0,
+                right: left + width,
+                bottom: top + 1.0,
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 2.0 / 255.0,
+            });
+            self.target.FillRectangle(&bridge_rect, &self.dynamic_brush);
+        }
+
+        // Sleek tucked top-edge handle while auto-hidden or mid-tuck animation
+        if height < 20.0 {
+            let handle_h = height.max(4.5);
+            let handle_r = (handle_h / 2.0).min(radius.max(2.25));
+            let handle_pill = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left,
+                    top: (top - handle_r * 0.35).max(0.0),
+                    right: left + width,
+                    bottom: top + handle_h,
+                },
+                radiusX: handle_r,
+                radiusY: handle_r,
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 12.0 / 255.0,
+                g: 12.0 / 255.0,
+                b: 16.0 / 255.0,
+                a: 0.86,
+            });
+            self.target
+                .FillRoundedRectangle(&handle_pill, &self.dynamic_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.16,
+            });
+            self.target
+                .DrawRoundedRectangle(&handle_pill, &self.dynamic_brush, 0.8, None);
+
+            let grip_w = (width * 0.34).clamp(28.0, 48.0);
+            let grip_left = left + (width - grip_w) / 2.0;
+            let grip_y = top + (handle_h - 1.5) * 0.55;
+            let grip = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: grip_left,
+                    top: grip_y,
+                    right: grip_left + grip_w,
+                    bottom: grip_y + 1.5,
+                },
+                radiusX: 0.75,
+                radiusY: 0.75,
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.40,
+            });
+            self.target
+                .FillRoundedRectangle(&grip, &self.dynamic_brush);
+
+            self.target.EndDraw(None, None)?;
+            return self.present(hwnd);
+        }
+
         let pill = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F {
                 left,
@@ -590,7 +702,18 @@ impl Renderer {
             radiusY: radius,
         };
 
-        self.target.FillRoundedRectangle(&pill, &self.fill_brush);
+        if frame.cicada_subtitle_bar && !frame.expanded {
+            // Semi-transparent sleek subtitle bar so meeting slides/video remain subtly visible
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 10.0 / 255.0,
+                g: 12.0 / 255.0,
+                b: 16.0 / 255.0,
+                a: if frame.cicada_click_through { 0.80 } else { 0.88 },
+            });
+            self.target.FillRoundedRectangle(&pill, &self.dynamic_brush);
+        } else {
+            self.target.FillRoundedRectangle(&pill, &self.fill_brush);
+        }
 
         let now = std::time::Instant::now();
         let hud_visible = frame.system.hud.is_visible(now);
@@ -617,6 +740,15 @@ impl Renderer {
                     self.target
                         .FillRoundedRectangle(&accent_rect, &self.dynamic_brush);
                 }
+            } else if frame.cicada.active && (!frame.expanded || frame.expanded_tab == ExpandedTab::Cicada) {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.16,
+                    g: 0.86,
+                    b: 0.62,
+                    a: 0.85,
+                });
+                self.target
+                    .FillRoundedRectangle(&accent_rect, &self.dynamic_brush);
             } else {
                 let (zr, zg, zb) = frame.zeki.accent_color();
                 let accent_alpha = if frame.zeki.state().is_assistant_active() {
@@ -654,6 +786,8 @@ impl Renderer {
                 let progress = frame.notification.toast_progress(now);
                 self.draw_notification_toast(left, top, toast, progress, frame.hovered_target);
             }
+        } else if frame.cicada_subtitle_bar && !frame.expanded {
+            self.draw_cicada_subtitle_bar(left, top, width, height, frame);
         } else if frame.expanded || expanded_progress >= 0.28 {
             let alpha = smoothstep(((expanded_progress - 0.15) / 0.85).clamp(0.0, 1.0));
             if alpha > 0.01 {
@@ -661,6 +795,9 @@ impl Renderer {
                 match frame.expanded_tab {
                     ExpandedTab::Zeki => {
                         self.draw_zeki_panel(left, top, width, height, frame, alpha);
+                    }
+                    ExpandedTab::Cicada => {
+                        self.draw_cicada_panel(left, top, width, height, frame, alpha);
                     }
                     ExpandedTab::Media => {
                         if frame.media.has_session {
@@ -697,13 +834,15 @@ impl Renderer {
                         );
                     }
                 }
-                if frame.expanded_tab != ExpandedTab::Zeki {
+                if !matches!(frame.expanded_tab, ExpandedTab::Zeki | ExpandedTab::Cicada) {
                     self.draw_zeki_dock(left, top, frame, alpha);
                 }
             }
         } else {
             let collapsed_alpha = (1.0 - expanded_progress * 3.5).clamp(0.0, 1.0);
-            if frame.zeki.state().is_assistant_active() {
+            if frame.cicada.active || frame.cicada.quick_reply_recording {
+                self.draw_collapsed_cicada(left, top, width, height, frame, collapsed_alpha);
+            } else if frame.zeki.state().is_assistant_active() {
                 self.draw_collapsed_assistant(left, top, width, height, frame, collapsed_alpha);
             } else if frame.media.has_session {
                 self.draw_collapsed_media(left, top, width, height, frame, collapsed_alpha);
@@ -765,6 +904,22 @@ impl Renderer {
                     });
                     self.target
                         .DrawRoundedRectangle(&pill, &self.dynamic_brush, 1.0, None);
+                } else if tab == ExpandedTab::Cicada {
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: 0.16,
+                        g: 0.85,
+                        b: 0.62,
+                        a: 0.25 * alpha,
+                    });
+                    self.target.FillRoundedRectangle(&pill, &self.dynamic_brush);
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: 0.16,
+                        g: 0.85,
+                        b: 0.62,
+                        a: 0.78 * alpha,
+                    });
+                    self.target
+                        .DrawRoundedRectangle(&pill, &self.dynamic_brush, 1.0, None);
                 } else {
                     self.accent_brush.SetOpacity(0.28 * alpha);
                     self.target.FillRoundedRectangle(&pill, &self.accent_brush);
@@ -781,6 +936,13 @@ impl Renderer {
 
             let label = match tab {
                 ExpandedTab::Zeki => "Zeki".to_string(),
+                ExpandedTab::Cicada => {
+                    if frame.cicada.active {
+                        "● Live".to_string()
+                    } else {
+                        "Live".to_string()
+                    }
+                }
                 ExpandedTab::Media => "Media".to_string(),
                 ExpandedTab::Timer => {
                     if frame.timer.running {
@@ -1037,6 +1199,956 @@ impl Renderer {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                 );
             }
+        }
+    }
+
+    // =========================================================================
+    // Cicada Mode (Live Meeting Translator): 3 States
+    // 1. Standby / Listening (Collapsed Pill)
+    // 2. Live Subtitle Bar (620x94 semi-transparent horizontal bar)
+    // 3. Expanded Transcript (560x340 / 640x470 scrollable bilingual panel)
+    // =========================================================================
+
+    unsafe fn draw_collapsed_cicada(
+        &self,
+        pill_left: f32,
+        pill_top: f32,
+        pill_width: f32,
+        pill_height: f32,
+        frame: &Frame,
+        alpha: f32,
+    ) {
+        // Mini Zeki wearing headset on left
+        frame.zeki.draw(
+            &self.factory,
+            &self.target,
+            &self.dynamic_brush,
+            self.round_stroke.as_ref(),
+            &self.dwrite,
+            &self.badge_format,
+            pill_left + 23.0,
+            pill_top + pill_height / 2.0 + 1.0,
+            11.0,
+            alpha,
+            true,
+        );
+
+        // Blinking live dot (amber when Quick-Reply recording, emerald when listening)
+        let blink = ((std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+            / 500)
+            % 2)
+            == 0;
+        let (dr, dg, db) = if frame.cicada.quick_reply_recording {
+            (0.98, 0.72, 0.22)
+        } else {
+            (0.16, 0.88, 0.62)
+        };
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: dr,
+            g: dg,
+            b: db,
+            a: (if blink { 0.98 } else { 0.40 }) * alpha,
+        });
+        self.target.FillEllipse(
+            &D2D1_ELLIPSE {
+                point: D2D_POINT_2F {
+                    x: pill_left + 44.0,
+                    y: pill_top + pill_height / 2.0,
+                },
+                radiusX: 3.6,
+                radiusY: 3.6,
+            },
+            &self.dynamic_brush,
+        );
+
+        let tag = if frame.cicada.quick_reply_recording {
+            format!("Reply→{}", cicada_lang_short_badge(&frame.cicada.reply_lang))
+        } else if frame.cicada.pending_segments > 0 {
+            format!("{} …", frame.cicada.lang_pair_badge())
+        } else {
+            frame.cicada.lang_pair_badge()
+        };
+        let tag_u16: Vec<u16> = tag.encode_utf16().collect();
+        if let Ok(layout) =
+            self.dwrite
+                .CreateTextLayout(&tag_u16, &self.notif_title_format, 96.0, 20.0)
+        {
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 0.72,
+                g: 0.98,
+                b: 0.88,
+                a: 0.96 * alpha,
+            });
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: pill_left + 54.0,
+                    y: pill_top + (pill_height - 17.0) / 2.0,
+                },
+                &layout,
+                &self.dynamic_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Live 5-bar waveform on the right
+        let level = frame.cicada_audio_level.clamp(0.08, 1.0);
+        let bar_w = 3.0f32;
+        let gap = 3.0f32;
+        let right_edge = pill_left + pill_width - 16.0;
+        let cy = pill_top + pill_height / 2.0;
+        let weights = [0.50f32, 0.82, 1.0, 0.78, 0.46];
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: dr,
+            g: dg,
+            b: db,
+            a: 0.92 * alpha,
+        });
+        for (i, &w_mul) in weights.iter().enumerate() {
+            let bh = (4.0 + 14.0 * level * w_mul).clamp(4.0, 18.0);
+            let bx = right_edge - (4 - i) as f32 * (bar_w + gap) - bar_w;
+            let bar = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: bx,
+                    top: cy - bh / 2.0,
+                    right: bx + bar_w,
+                    bottom: cy + bh / 2.0,
+                },
+                radiusX: bar_w / 2.0,
+                radiusY: bar_w / 2.0,
+            };
+            self.target.FillRoundedRectangle(&bar, &self.dynamic_brush);
+        }
+    }
+
+    unsafe fn draw_cicada_subtitle_bar(
+        &self,
+        pill_left: f32,
+        pill_top: f32,
+        pill_width: f32,
+        pill_height: f32,
+        frame: &Frame,
+    ) {
+        let bl = cicada_bar_layout(pill_width, pill_height);
+        let hovered = frame.hovered_target;
+
+        // Zeki wearing headset on left end of bar (nods on each new line!)
+        frame.zeki.draw(
+            &self.factory,
+            &self.target,
+            &self.dynamic_brush,
+            self.round_stroke.as_ref(),
+            &self.dwrite,
+            &self.badge_format,
+            pill_left + bl.zeki_center.0,
+            pill_top + bl.zeki_center.1,
+            19.0,
+            1.0,
+            false,
+        );
+
+        // Compact status header on top-left next to Zeki
+        let status_txt = if frame.cicada.quick_reply_recording {
+            format!(
+                "● Quick-Reply (→{}) — Bicara sekarang...",
+                cicada_lang_short_badge(&frame.cicada.reply_lang)
+            )
+        } else if frame.cicada.quick_reply_busy {
+            "● Menerjemahkan Quick-Reply...".to_string()
+        } else if let Some(err) = &frame.cicada.error {
+            format!("! {err}")
+        } else {
+            let mic_tag = if frame.cicada.mic_enabled { " + Mic" } else { "" };
+            let pend = if frame.cicada.pending_segments > 0 { " · …" } else { "" };
+            format!("● LIVE {} {mic_tag}{pend}", frame.cicada.lang_pair_badge())
+        };
+        let st_u16: Vec<u16> = status_txt.encode_utf16().collect();
+        let header_w = (bl.reply_btn.left - 70.0).max(80.0);
+        if let Ok(layout) =
+            self.dwrite
+                .CreateTextLayout(&st_u16, &self.notif_app_format, header_w, 18.0)
+        {
+            let _ = layout.SetTrimming(
+                &DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    delimiter: 0,
+                    delimiterCount: 0,
+                },
+                &self.notif_body_trim,
+            );
+            let (sr, sg, sb) = if frame.cicada.error.is_some() {
+                (0.98, 0.44, 0.52)
+            } else if frame.cicada.quick_reply_recording {
+                (0.98, 0.76, 0.25)
+            } else {
+                (0.24, 0.90, 0.68)
+            };
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: sr,
+                g: sg,
+                b: sb,
+                a: 0.95,
+            });
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: pill_left + 66.0,
+                    y: pill_top + 11.0,
+                },
+                &layout,
+                &self.dynamic_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        // Top-right micro controls: Reply | Pass/Lock | Full | Stop
+        self.draw_cicada_chip_btn(
+            pill_left,
+            pill_top,
+            bl.reply_btn,
+            if frame.cicada.quick_reply_recording { "● Stop" } else { "Reply" },
+            frame.cicada.quick_reply_recording,
+            hovered == Some(HitTarget::CicadaQuickReply),
+            (0.98, 0.72, 0.22),
+            1.0,
+        );
+        self.draw_cicada_chip_btn(
+            pill_left,
+            pill_top,
+            bl.pass_btn,
+            if frame.cicada_click_through { "Unlock" } else { "Pass" },
+            frame.cicada_click_through,
+            hovered == Some(HitTarget::CicadaToggleClickThrough),
+            (0.38, 0.76, 0.98),
+            1.0,
+        );
+        self.draw_cicada_chip_btn(
+            pill_left,
+            pill_top,
+            bl.expand_btn,
+            "Full",
+            false,
+            hovered == Some(HitTarget::CicadaExpandFromBar),
+            (0.68, 0.74, 0.85),
+            1.0,
+        );
+        self.draw_cicada_chip_btn(
+            pill_left,
+            pill_top,
+            bl.stop_btn,
+            if frame.cicada.active { "Stop" } else { "Start" },
+            frame.cicada.active,
+            hovered == Some(HitTarget::CicadaToggleListen),
+            (0.94, 0.30, 0.38),
+            1.0,
+        );
+
+        // Live 2-3 line bilingual subtitle area
+        let tx = pill_left + bl.text_rect.left;
+        let ty = pill_top + bl.text_rect.top;
+        let tw = bl.text_rect.width().max(120.0);
+        let th = bl.text_rect.height().max(40.0);
+
+        if let Some(latest) = frame.cicada.entries.last() {
+            let mut y_cur = ty;
+            // Optional dim original line on top (1 line)
+            if frame.cicada.show_original && !latest.original.eq_ignore_ascii_case(&latest.translation) {
+                let orig_line = format!("[{}] {}", latest.speaker.tag(), latest.original);
+                let u16_orig: Vec<u16> = orig_line.encode_utf16().collect();
+                if let Ok(layout) =
+                    self.dwrite
+                        .CreateTextLayout(&u16_orig, &self.notif_app_format, tw, 16.0)
+                {
+                    let _ = layout.SetTrimming(
+                        &DWRITE_TRIMMING {
+                            granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                            delimiter: 0,
+                            delimiterCount: 0,
+                        },
+                        &self.notif_body_trim,
+                    );
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: 0.76,
+                        g: 0.82,
+                        b: 0.90,
+                        a: 0.72,
+                    });
+                    self.target.DrawTextLayout(
+                        D2D_POINT_2F { x: tx, y: y_cur },
+                        &layout,
+                        &self.dynamic_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                }
+                y_cur += 16.0;
+            }
+
+            // Crisp bright translated subtitle (up to 2 lines)
+            let trans_text = if latest.speaker == SpeakerChannel::QuickReply {
+                format!("💬 {}", latest.translation)
+            } else {
+                latest.translation.clone()
+            };
+            let u16_tr: Vec<u16> = trans_text.encode_utf16().collect();
+            let avail_h = (ty + th - y_cur).max(20.0);
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&u16_tr, &self.notif_title_format, tw, avail_h)
+            {
+                let _ = layout.SetTrimming(
+                    &DWRITE_TRIMMING {
+                        granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                        delimiter: 0,
+                        delimiterCount: 0,
+                    },
+                    &self.notif_title_trim,
+                );
+                let (tr, tg, tb) = match latest.speaker {
+                    SpeakerChannel::Online => (1.0, 1.0, 1.0),
+                    SpeakerChannel::You => (0.62, 0.98, 0.80),
+                    SpeakerChannel::QuickReply => (1.0, 0.88, 0.55),
+                };
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: tr,
+                    g: tg,
+                    b: tb,
+                    a: 0.99,
+                });
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F { x: tx, y: y_cur },
+                    &layout,
+                    &self.dynamic_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        } else {
+            let waiting = if frame.cicada.active {
+                "Mendengarkan audio sistem (Zoom / Meet / Teams / YouTube)... subtitle akan muncul otomatis."
+            } else {
+                "Cicada Subtitle Bar siap. Klik Start untuk mulai menerjemahkan audio rapat."
+            };
+            let u16_w: Vec<u16> = waiting.encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&u16_w, &self.notif_body_format, tw, th)
+            {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.78,
+                    g: 0.84,
+                    b: 0.92,
+                    a: 0.72,
+                });
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F { x: tx, y: ty + 8.0 },
+                    &layout,
+                    &self.dynamic_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+    }
+
+    unsafe fn draw_cicada_panel(
+        &mut self,
+        origin_x: f32,
+        origin_y: f32,
+        pill_width: f32,
+        pill_height: f32,
+        frame: &Frame,
+        alpha: f32,
+    ) {
+        let cl = cicada_panel_layout(pill_width, pill_height);
+        let hovered = frame.hovered_target;
+
+        // 1. Left Zeki Taking-Notes Stage
+        let stage = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + cl.zeki_stage.left,
+                top: origin_y + cl.zeki_stage.top,
+                right: origin_x + cl.zeki_stage.right,
+                bottom: origin_y + cl.zeki_stage.bottom,
+            },
+            radiusX: 16.0,
+            radiusY: 16.0,
+        };
+        let (er, eg, eb) = if frame.cicada.active {
+            (0.16, 0.86, 0.62)
+        } else {
+            (0.24, 0.74, 0.96)
+        };
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: er,
+            g: eg,
+            b: eb,
+            a: 0.10 * alpha,
+        });
+        self.target.FillRoundedRectangle(&stage, &self.dynamic_brush);
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: er,
+            g: eg,
+            b: eb,
+            a: 0.36 * alpha,
+        });
+        self.target
+            .DrawRoundedRectangle(&stage, &self.dynamic_brush, 1.0, None);
+
+        let (scx, scy) = cl.zeki_stage.center();
+        frame.zeki.draw(
+            &self.factory,
+            &self.target,
+            &self.dynamic_brush,
+            self.round_stroke.as_ref(),
+            &self.dwrite,
+            &self.badge_format,
+            origin_x + scx - 4.0,
+            origin_y + scy + 2.0,
+            23.0,
+            alpha,
+            false,
+        );
+
+        // Live audio badge inside top-left of Zeki stage
+        if frame.cicada.active {
+            let live_u16: Vec<u16> = "● LIVE".encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&live_u16, &self.badge_format, 46.0, 14.0)
+            {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.18,
+                    g: 0.92,
+                    b: 0.65,
+                    a: 0.95 * alpha,
+                });
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + cl.zeki_stage.left + 4.0,
+                        y: origin_y + cl.zeki_stage.top + 4.0,
+                    },
+                    &layout,
+                    &self.dynamic_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+        }
+
+        // 2. Left Column Control Buttons
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.listen_btn,
+            if frame.cicada.active { "■ Stop Live" } else { "▶ Start Live" },
+            frame.cicada.active,
+            hovered == Some(HitTarget::CicadaToggleListen),
+            if frame.cicada.active { (0.94, 0.30, 0.38) } else { (0.16, 0.86, 0.62) },
+            alpha,
+        );
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.mic_btn,
+            if frame.cicada.mic_enabled { "Mic: ON" } else { "Mic: OFF" },
+            frame.cicada.mic_enabled,
+            hovered == Some(HitTarget::CicadaToggleMic),
+            (0.22, 0.82, 0.94),
+            alpha,
+        );
+        let reply_lbl = if frame.cicada.quick_reply_recording {
+            "● Stop Reply".to_string()
+        } else if frame.cicada.quick_reply_busy {
+            "Translating...".to_string()
+        } else {
+            format!("Reply →{}", cicada_lang_short_badge(&frame.cicada.reply_lang))
+        };
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.reply_btn,
+            &reply_lbl,
+            frame.cicada.quick_reply_recording,
+            hovered == Some(HitTarget::CicadaQuickReply),
+            (0.98, 0.72, 0.22),
+            alpha,
+        );
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.sub_bar_btn,
+            "Subtitle Bar",
+            frame.cicada_subtitle_bar,
+            hovered == Some(HitTarget::CicadaToggleSubtitleBar),
+            (0.65, 0.56, 0.98),
+            alpha,
+        );
+
+        // 3. Top-Right Title & Language / Original / Expand Chips
+        let hdr = if frame.cicada.glossary_count > 0 {
+            format!(
+                "Cicada Live · {} · {} terms",
+                frame.cicada.lang_pair_badge(),
+                frame.cicada.glossary_count
+            )
+        } else {
+            format!("Cicada Live · {}", frame.cicada.lang_pair_badge())
+        };
+        let hdr_u16: Vec<u16> = hdr.encode_utf16().collect();
+        let hdr_w = (cl.lang_btn.left - cl.card.left - 6.0).max(80.0);
+        if let Ok(layout) =
+            self.dwrite
+                .CreateTextLayout(&hdr_u16, &self.notif_title_format, hdr_w, 20.0)
+        {
+            self.title_brush.SetOpacity(0.95 * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + cl.card.left + 2.0,
+                    y: origin_y + 47.0,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+
+        let lang_lbl = format!("→ {}", cicada_lang_short_badge(&frame.cicada.target_lang));
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.lang_btn,
+            &lang_lbl,
+            true,
+            hovered == Some(HitTarget::CicadaCycleLang),
+            (0.16, 0.86, 0.62),
+            alpha,
+        );
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.orig_btn,
+            if frame.cicada.show_original { "Orig ON" } else { "Orig OFF" },
+            frame.cicada.show_original,
+            hovered == Some(HitTarget::CicadaToggleOriginal),
+            (0.38, 0.74, 0.98),
+            alpha,
+        );
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.size_btn,
+            if pill_width > 600.0 { "Small" } else { "Wide" },
+            false,
+            hovered == Some(HitTarget::CicadaToggleSize),
+            (0.68, 0.74, 0.85),
+            alpha,
+        );
+
+        // 4. Scrollable Bilingual Transcript Card
+        let card_rect = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + cl.card.left,
+                top: origin_y + cl.card.top,
+                right: origin_x + cl.card.right,
+                bottom: origin_y + cl.card.bottom,
+            },
+            radiusX: 14.0,
+            radiusY: 14.0,
+        };
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 0.045 * alpha,
+        });
+        self.target
+            .FillRoundedRectangle(&card_rect, &self.dynamic_brush);
+        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 0.11 * alpha,
+        });
+        self.target
+            .DrawRoundedRectangle(&card_rect, &self.dynamic_brush, 1.0, None);
+
+        let card_clip = D2D_RECT_F {
+            left: origin_x + cl.card.left + 8.0,
+            top: origin_y + cl.card.top + 6.0,
+            right: origin_x + cl.card.right - 8.0,
+            bottom: origin_y + cl.card.bottom - 6.0,
+        };
+        self.target
+            .PushAxisAlignedClip(&card_clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        let inner_w = (cl.card.width() - 22.0).max(160.0);
+        let view_h = (cl.card.height() - 12.0).max(40.0);
+
+        if let Some(err) = &frame.cicada.error {
+            let msg = format!("Cicada Notice:\n{err}");
+            let u16_e: Vec<u16> = msg.encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&u16_e, &self.notif_body_format, inner_w, view_h)
+            {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.98,
+                    g: 0.54,
+                    b: 0.58,
+                    a: 0.95 * alpha,
+                });
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + cl.card.left + 10.0,
+                        y: origin_y + cl.card.top + 10.0,
+                    },
+                    &layout,
+                    &self.dynamic_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+            self.last_cicada_max_scroll = 0.0;
+        } else if frame.cicada.entries.is_empty() {
+            let empty_msg = if frame.cicada.active {
+                "Menunggu suara rapat dari speaker (WASAPI Loopback)...\n\nTips:\n• Klik 'Subtitle Bar' untuk tampilan bar tipis click-through di atas Zoom/Meet.\n• Nyalakan 'Mic: ON' untuk transkrip 2 arah (Online + Anda).\n• Klik 'Reply' untuk bicara bahasa Indonesia dan langsung diterjemahkan."
+            } else {
+                "Cicada Mode — Live Meeting Translator\n\nKlik '▶ Start Live' untuk mulai menangkap audio speaker (Zoom, Google Meet, Teams, YouTube) tanpa bot rapat.\n\nAtur bahasa target & Custom Glossary lewat tombol Config."
+            };
+            let u16_m: Vec<u16> = empty_msg.encode_utf16().collect();
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&u16_m, &self.notif_body_format, inner_w, view_h)
+            {
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: 0.80,
+                    g: 0.85,
+                    b: 0.92,
+                    a: 0.72 * alpha,
+                });
+                self.target.DrawTextLayout(
+                    D2D_POINT_2F {
+                        x: origin_x + cl.card.left + 10.0,
+                        y: origin_y + cl.card.top + 10.0,
+                    },
+                    &layout,
+                    &self.dynamic_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+            }
+            self.last_cicada_max_scroll = 0.0;
+        } else {
+            // Measure all entries so scrolling & auto-scroll work smoothly
+            struct MeasuredEntry {
+                header: String,
+                orig_layout: Option<IDWriteTextLayout>,
+                orig_h: f32,
+                trans_layout: Option<IDWriteTextLayout>,
+                speaker: SpeakerChannel,
+                total_h: f32,
+            }
+
+            let mut items: Vec<MeasuredEntry> = Vec::with_capacity(frame.cicada.entries.len());
+            let mut total_content_h = 0.0f32;
+            for entry in &frame.cicada.entries {
+                let header = format!(
+                    "{}  {}  {}→{}",
+                    entry.timestamp_label(),
+                    entry.speaker.tag(),
+                    cicada_lang_short_badge(&entry.source_lang),
+                    cicada_lang_short_badge(&entry.target_lang),
+                );
+                let (orig_layout, orig_h) = if frame.cicada.show_original
+                    && !entry.original.eq_ignore_ascii_case(&entry.translation)
+                {
+                    let u16_o: Vec<u16> = entry.original.encode_utf16().collect();
+                    if let Ok(l) =
+                        self.dwrite
+                            .CreateTextLayout(&u16_o, &self.notif_app_format, inner_w - 6.0, 200.0)
+                    {
+                        let mut m = DWRITE_TEXT_METRICS::default();
+                        let h = if l.GetMetrics(&mut m).is_ok() {
+                            m.height.ceil()
+                        } else {
+                            15.0
+                        };
+                        (Some(l), h + 2.0)
+                    } else {
+                        (None, 0.0)
+                    }
+                } else {
+                    (None, 0.0)
+                };
+
+                let u16_t: Vec<u16> = entry.translation.encode_utf16().collect();
+                let (trans_layout, trans_h) = if let Ok(l) =
+                    self.dwrite
+                        .CreateTextLayout(&u16_t, &self.notif_title_format, inner_w - 6.0, 260.0)
+                {
+                    let mut m = DWRITE_TEXT_METRICS::default();
+                    let h = if l.GetMetrics(&mut m).is_ok() {
+                        m.height.ceil()
+                    } else {
+                        17.0
+                    };
+                    (Some(l), h)
+                } else {
+                    (None, 17.0)
+                };
+
+                let block_h = 16.0 + orig_h + trans_h + 10.0;
+                total_content_h += block_h;
+                items.push(MeasuredEntry {
+                    header,
+                    orig_layout,
+                    orig_h,
+                    trans_layout,
+                    speaker: entry.speaker,
+                    total_h: block_h,
+                });
+            }
+
+            let max_scroll = (total_content_h - view_h).max(0.0);
+            self.last_cicada_max_scroll = max_scroll;
+            let scroll = if frame.cicada_auto_scroll {
+                max_scroll
+            } else {
+                frame.cicada_scroll_y.clamp(0.0, max_scroll)
+            };
+
+            let mut cur_y = origin_y + cl.card.top + 8.0 - scroll;
+            let clip_top = origin_y + cl.card.top - 40.0;
+            let clip_bot = origin_y + cl.card.bottom + 40.0;
+
+            for item in &items {
+                if cur_y + item.total_h >= clip_top && cur_y <= clip_bot {
+                    let (sr, sg, sb) = match item.speaker {
+                        SpeakerChannel::Online => (0.24, 0.80, 0.98),
+                        SpeakerChannel::You => (0.22, 0.88, 0.62),
+                        SpeakerChannel::QuickReply => (0.98, 0.76, 0.25),
+                    };
+
+                    // Left color accent bar for speaker distinction
+                    let bar_rect = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: origin_x + cl.card.left + 10.0,
+                            top: cur_y + 2.0,
+                            right: origin_x + cl.card.left + 12.5,
+                            bottom: cur_y + item.total_h - 8.0,
+                        },
+                        radiusX: 1.2,
+                        radiusY: 1.2,
+                    };
+                    self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                        r: sr,
+                        g: sg,
+                        b: sb,
+                        a: 0.85 * alpha,
+                    });
+                    self.target
+                        .FillRoundedRectangle(&bar_rect, &self.dynamic_brush);
+
+                    // Header line (timestamp + speaker + lang pair)
+                    let u16_h: Vec<u16> = item.header.encode_utf16().collect();
+                    if let Ok(hl) =
+                        self.dwrite
+                            .CreateTextLayout(&u16_h, &self.notif_app_format, inner_w - 8.0, 15.0)
+                    {
+                        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                            r: sr,
+                            g: sg,
+                            b: sb,
+                            a: 0.92 * alpha,
+                        });
+                        self.target.DrawTextLayout(
+                            D2D_POINT_2F {
+                                x: origin_x + cl.card.left + 18.0,
+                                y: cur_y,
+                            },
+                            &hl,
+                            &self.dynamic_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    }
+
+                    let mut text_y = cur_y + 15.0;
+                    if let Some(ol) = &item.orig_layout {
+                        self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                            r: 0.75,
+                            g: 0.80,
+                            b: 0.88,
+                            a: 0.68 * alpha,
+                        });
+                        self.target.DrawTextLayout(
+                            D2D_POINT_2F {
+                                x: origin_x + cl.card.left + 18.0,
+                                y: text_y,
+                            },
+                            ol,
+                            &self.dynamic_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                        text_y += item.orig_h;
+                    }
+                    if let Some(tl) = &item.trans_layout {
+                        self.title_brush.SetOpacity(0.97 * alpha);
+                        self.target.DrawTextLayout(
+                            D2D_POINT_2F {
+                                x: origin_x + cl.card.left + 18.0,
+                                y: text_y,
+                            },
+                            tl,
+                            &self.title_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    }
+                }
+                cur_y += item.total_h;
+            }
+
+            // Subtle scrollbar thumb when scrollable
+            if max_scroll > 1.0 {
+                let track_h = view_h - 4.0;
+                let thumb_h = (track_h * (view_h / total_content_h)).clamp(18.0, track_h);
+                let thumb_y =
+                    origin_y + cl.card.top + 8.0 + (scroll / max_scroll) * (track_h - thumb_h);
+                let thumb = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: origin_x + cl.card.right - 6.0,
+                        top: thumb_y,
+                        right: origin_x + cl.card.right - 3.0,
+                        bottom: thumb_y + thumb_h,
+                    },
+                    radiusX: 1.5,
+                    radiusY: 1.5,
+                };
+                self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 0.28 * alpha,
+                });
+                self.target
+                    .FillRoundedRectangle(&thumb, &self.dynamic_brush);
+            }
+        }
+
+        self.target.PopAxisAlignedClip();
+
+        // 5. Bottom Action Bar (Copy MD | Summary | Ask Zeki | Clear)
+        let has_entries = frame.cicada.has_entries();
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.copy_btn,
+            if frame.cicada_copied_flash { "Copied!" } else { "Copy MD" },
+            frame.cicada_copied_flash,
+            has_entries && hovered == Some(HitTarget::CicadaCopyTranscript),
+            (0.20, 0.85, 0.56),
+            if has_entries { alpha } else { alpha * 0.42 },
+        );
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.summary_btn,
+            "Auto-Summary",
+            false,
+            has_entries && hovered == Some(HitTarget::CicadaSummarize),
+            (0.65, 0.55, 0.98),
+            if has_entries { alpha } else { alpha * 0.42 },
+        );
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.ask_btn,
+            "Ask Zeki",
+            true,
+            hovered == Some(HitTarget::CicadaAskZeki),
+            (0.22, 0.74, 0.97),
+            alpha,
+        );
+        self.draw_cicada_chip_btn(
+            origin_x,
+            origin_y,
+            cl.clear_btn,
+            "Clear",
+            false,
+            has_entries && hovered == Some(HitTarget::CicadaClear),
+            (0.94, 0.34, 0.42),
+            if has_entries { alpha } else { alpha * 0.42 },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn draw_cicada_chip_btn(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        rect: RectF,
+        label: &str,
+        active: bool,
+        hovered: bool,
+        rgb: (f32, f32, f32),
+        alpha: f32,
+    ) {
+        let rr = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: origin_x + rect.left,
+                top: origin_y + rect.top,
+                right: origin_x + rect.right,
+                bottom: origin_y + rect.bottom,
+            },
+            radiusX: (rect.height() * 0.42).min(10.0),
+            radiusY: (rect.height() * 0.42).min(10.0),
+        };
+        let (r, g, b) = rgb;
+        if active {
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r,
+                g,
+                b,
+                a: (if hovered { 0.34 } else { 0.24 }) * alpha,
+            });
+            self.target.FillRoundedRectangle(&rr, &self.dynamic_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r,
+                g,
+                b,
+                a: 0.80 * alpha,
+            });
+            self.target
+                .DrawRoundedRectangle(&rr, &self.dynamic_brush, 1.0, None);
+        } else {
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: (if hovered { 0.16 } else { 0.08 }) * alpha,
+            });
+            self.target.FillRoundedRectangle(&rr, &self.dynamic_brush);
+            self.dynamic_brush.SetColor(&D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: (if hovered { 0.28 } else { 0.14 }) * alpha,
+            });
+            self.target
+                .DrawRoundedRectangle(&rr, &self.dynamic_brush, 0.9, None);
+        }
+
+        let u16_l: Vec<u16> = label.encode_utf16().collect();
+        if let Ok(layout) =
+            self.dwrite
+                .CreateTextLayout(&u16_l, &self.pill_btn_format, rect.width(), rect.height())
+        {
+            self.title_brush
+                .SetOpacity((if active || hovered { 0.98 } else { 0.84 }) * alpha);
+            self.target.DrawTextLayout(
+                D2D_POINT_2F {
+                    x: origin_x + rect.left,
+                    y: origin_y + rect.top,
+                },
+                &layout,
+                &self.title_brush,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
         }
     }
 

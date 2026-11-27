@@ -49,11 +49,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::render::d2d::{Frame, Renderer};
 use crate::render::spring::{PillMode, PillSprings};
 use crate::render::widgets::{ExpandedTab, HitContext, HitTarget};
-use crate::render::zeki::{ZekiEngine, ZekiState};
+use crate::render::zeki::{ZekiCicadaAccessory, ZekiEngine, ZekiState};
 use crate::services::assistant::{
     AssistantPhase, AssistantService, AssistantSnapshot, RequestContext, WM_ASSISTANT_UPDATED,
 };
 use crate::services::audio_viz::AudioVisualizer;
+use crate::services::cicada::{CicadaService, CicadaSnapshot, WM_CICADA_UPDATED};
 use crate::services::clipboard::{ClipboardHistory, WM_CLIPBOARDUPDATE};
 use crate::services::config::{AssistantConfig, HideHotkey, PttHotkey};
 use crate::services::files::{self, FileAttachment, WM_FILE_ATTACHED};
@@ -79,7 +80,7 @@ const WM_HOTKEY_PTT_DOWN: u32 = WM_USER + 210;
 const WM_HOTKEY_PTT_UP: u32 = WM_USER + 211;
 const WM_HOTKEY_CANCEL: u32 = WM_USER + 212;
 const WM_HOTKEY_TOGGLE_HIDE: u32 = WM_USER + 213;
-const AUTO_HIDE_DELAY_SECS: u64 = 4;
+const AUTO_HIDE_DELAY_SECS: u64 = 10;
 const TIMER_ANIMATION: usize = 1;
 const ANIMATION_INTERVAL_FAST_MS: u32 = 16;
 const ANIMATION_INTERVAL_IDLE_MS: u32 = 50;
@@ -121,6 +122,15 @@ struct App {
     zeki: ZekiEngine,
     assistant: AssistantService,
     assistant_snapshot: AssistantSnapshot,
+    cicada: CicadaService,
+    cicada_snapshot: CicadaSnapshot,
+    cicada_subtitle_bar: bool,
+    cicada_click_through: bool,
+    cicada_large: bool,
+    cicada_scroll_y: f32,
+    cicada_auto_scroll: bool,
+    cicada_copied_flash_until: Option<Instant>,
+    last_cicada_arrival_seq: u64,
     assistant_pinned_open: bool,
     chat_mode: bool,
     chat_large: bool,
@@ -156,6 +166,7 @@ struct App {
     hovered: bool,
     hovered_target: Option<HitTarget>,
     tracking_leave: bool,
+    cursor_outside_since: Option<Instant>,
     timer_interval_ms: Option<u32>,
     last_frame: Instant,
     tray: Tray,
@@ -201,6 +212,8 @@ impl App {
 
         let assistant = AssistantService::start(host.hwnd());
         let assistant_snapshot = assistant.snapshot();
+        let cicada = CicadaService::start(host.hwnd());
+        let cicada_snapshot = cicada.snapshot();
         let mut zeki = ZekiEngine::new();
         zeki.set_dancing(media_info.has_session && media_info.is_playing);
 
@@ -211,6 +224,15 @@ impl App {
             zeki,
             assistant,
             assistant_snapshot,
+            cicada,
+            cicada_snapshot,
+            cicada_subtitle_bar: false,
+            cicada_click_through: false,
+            cicada_large: false,
+            cicada_scroll_y: 0.0,
+            cicada_auto_scroll: true,
+            cicada_copied_flash_until: None,
+            last_cicada_arrival_seq: 0,
             assistant_pinned_open: false,
             chat_mode: false,
             chat_large: false,
@@ -246,6 +268,7 @@ impl App {
             hovered: false,
             hovered_target: None,
             tracking_leave: false,
+            cursor_outside_since: None,
             timer_interval_ms: None,
             last_frame: Instant::now(),
             tray,
@@ -270,7 +293,8 @@ impl App {
         };
         let attached_label = self.attached_file.as_ref().map(|f| f.short_label());
         let frame = Frame {
-            hidden_visual: self.auto_hidden || self.manual_hidden,
+            manual_hidden: self.manual_hidden,
+            auto_hidden: self.auto_hidden,
             width,
             height,
             radius,
@@ -296,6 +320,16 @@ impl App {
             clip_items: &self.clipboard.items,
             clip_copied_flash: self.clipboard.is_copied_flash_active(),
             sys_stats: &self.sysmon.stats,
+            cicada: &self.cicada_snapshot,
+            cicada_audio_level: self.cicada.live_audio_level(),
+            cicada_subtitle_bar: self.cicada_subtitle_bar,
+            cicada_click_through: self.cicada_click_through,
+            cicada_scroll_y: self.cicada_scroll_y,
+            cicada_auto_scroll: self.cicada_auto_scroll,
+            cicada_copied_flash: self
+                .cicada_copied_flash_until
+                .map(|t| Instant::now() < t)
+                .unwrap_or(false),
         };
         self.renderer.render(self.host.hwnd(), &frame)
     }
@@ -316,6 +350,9 @@ impl App {
             assistant_has_reply: !self.assistant_snapshot.reply.is_empty(),
             assistant_has_error: self.assistant_snapshot.error.is_some(),
             assistant_has_file: self.attached_file.is_some(),
+            cicada_subtitle_bar: self.cicada_subtitle_bar,
+            cicada_has_entries: self.cicada_snapshot.has_entries(),
+            cicada_has_quick_reply: self.cicada_snapshot.last_quick_reply.is_some(),
         }
     }
 
@@ -347,6 +384,7 @@ impl App {
             }
         } else {
             self.hovered_target = None;
+            self.last_visible_activity = Instant::now();
         }
         self.apply_pill_mode();
         self.update_timer();
@@ -370,25 +408,39 @@ impl App {
         if self.hud_visible() {
             return false;
         }
-        if self.expanded {
-            // Zeki is visible across ALL expanded sub-menus (Hero in Zeki tab + Companion Dock in all others)
+        if self.expanded || self.cicada_subtitle_bar {
+            // Zeki is visible across ALL expanded sub-menus & Cicada Live Subtitle Bar
             true
         } else if self.toast_visible() {
             false
         } else {
-            self.zeki.state().is_assistant_active() || !self.media_info.has_session
+            self.cicada_snapshot.active
+                || self.cicada_snapshot.quick_reply_recording
+                || self.zeki.state().is_assistant_active()
+                || !self.media_info.has_session
         }
     }
 
     fn desired_timer_interval_ms(&self) -> Option<u32> {
-        if self.manual_hidden || self.auto_hidden || self.fullscreen_monitor.is_hidden() {
+        if self.manual_hidden || self.fullscreen_monitor.is_hidden() {
             return None;
+        }
+        if self.auto_hidden {
+            return if !self.springs.is_settled() {
+                Some(ANIMATION_INTERVAL_FAST_MS)
+            } else {
+                None
+            };
         }
         if !self.springs.is_settled()
             || self.equalizer_active()
             || self.toast_progress_active()
+            || self.cicada_snapshot.active
+            || self.cicada_snapshot.quick_reply_recording
             || (self.zeki_visible()
-                && (self.zeki.is_high_energy() || (self.expanded && self.expanded_tab == ExpandedTab::Zeki)))
+                && (self.zeki.is_high_energy()
+                    || (self.expanded
+                        && matches!(self.expanded_tab, ExpandedTab::Zeki | ExpandedTab::Cicada))))
         {
             Some(ANIMATION_INTERVAL_FAST_MS)
         } else if self.zeki_visible() {
@@ -448,6 +500,47 @@ impl App {
                 .set_live_voice_level(Some(self.assistant.live_voice_level()));
         } else {
             self.zeki.set_live_voice_level(None);
+        }
+
+        // Sync Zeki's Cicada Mode headset / taking-notes accessories & live audio rhythm
+        let cicada_acc = if self.expanded && self.expanded_tab == ExpandedTab::Cicada {
+            ZekiCicadaAccessory::TakingNotes
+        } else if self.cicada_snapshot.active
+            || self.cicada_snapshot.quick_reply_recording
+            || self.cicada_subtitle_bar
+        {
+            ZekiCicadaAccessory::Headset
+        } else {
+            ZekiCicadaAccessory::None
+        };
+        self.zeki
+            .set_cicada_mode(cicada_acc, self.cicada.live_audio_level());
+
+        if !self.expanded {
+            self.cursor_outside_since = None;
+        } else if !(self.chat_focused && !self.chat_input.is_empty())
+            && !self.assistant_snapshot.phase.is_busy()
+            && !self.chat_dragging
+        {
+            // Reliable cursor-outside watchdog (covers fast mouse exits & missed WM_MOUSELEAVE)
+            if hit_test::cursor_over_pill(self.host.hwnd(), self.host.dpi(), &self.springs) {
+                self.cursor_outside_since = None;
+            } else {
+                let since = *self.cursor_outside_since.get_or_insert(now);
+                if now.duration_since(since) >= std::time::Duration::from_millis(320) {
+                    self.cursor_outside_since = None;
+                    self.hovered = false;
+                    self.tracking_leave = false;
+                    self.hovered_target = None;
+                    self.assistant_pinned_open = false;
+                    if self.chat_focused {
+                        self.set_chat_focus(false);
+                    }
+                    self.set_expanded(false);
+                }
+            }
+        } else {
+            self.cursor_outside_since = None;
         }
 
         let prev_state = self.zeki.state();
@@ -521,7 +614,22 @@ impl App {
             notifications: self.notification_snapshot.clone(),
             clipboard_preview,
             attachment: self.attached_file.clone(),
+            meeting_transcript: self.cicada.build_qa_context(),
         }
+    }
+
+    unsafe fn on_cicada_updated(&mut self) {
+        self.cicada_snapshot = self.cicada.snapshot();
+        if self.cicada_snapshot.arrival_seq != self.last_cicada_arrival_seq {
+            self.last_cicada_arrival_seq = self.cicada_snapshot.arrival_seq;
+            self.zeki.trigger_nod();
+        }
+        if self.cicada_snapshot.active || self.cicada_snapshot.quick_reply_recording {
+            self.reveal_from_auto_hide();
+        }
+        self.apply_pill_mode();
+        self.update_timer();
+        let _ = self.render();
     }
 
     unsafe fn remember_foreground_window(&mut self) {
@@ -560,6 +668,8 @@ impl App {
             && !self.assistant_snapshot.phase.is_busy()
             && !self.zeki.state().is_assistant_active()
             && !self.timer.running
+            && !self.cicada_snapshot.active
+            && !self.cicada_subtitle_bar
     }
 
     unsafe fn reveal_from_auto_hide(&mut self) {
@@ -602,6 +712,10 @@ impl App {
     }
 
     unsafe fn toggle_manual_hide(&mut self) {
+        if self.auto_hidden && !self.manual_hidden {
+            self.reveal_from_auto_hide();
+            return;
+        }
         let next = !self.manual_hidden;
         self.set_manual_hidden(next);
     }
@@ -713,13 +827,31 @@ impl App {
     }
 
     unsafe fn on_mouse_wheel(&mut self, delta: i16) {
+        let steps = (delta as f32) / 120.0;
+        if self.expanded && self.expanded_tab == ExpandedTab::Cicada {
+            let max_scroll = self.renderer.cicada_max_scroll();
+            if max_scroll <= 0.0 {
+                self.cicada_scroll_y = 0.0;
+                self.cicada_auto_scroll = true;
+            } else {
+                let cur = if self.cicada_auto_scroll {
+                    max_scroll
+                } else {
+                    self.cicada_scroll_y.clamp(0.0, max_scroll)
+                };
+                let next = (cur - steps * 36.0).clamp(0.0, max_scroll);
+                self.cicada_scroll_y = next;
+                self.cicada_auto_scroll = (max_scroll - next) <= 2.0;
+            }
+            let _ = self.render();
+            return;
+        }
         if !self.expanded
             || self.expanded_tab != ExpandedTab::Zeki
             || !(self.chat_mode || self.assistant_snapshot.has_conversation_view())
         {
             return;
         }
-        let steps = (delta as f32) / 120.0;
         self.scroll_chat_by(-steps * 36.0);
         let _ = self.render();
     }
@@ -748,10 +880,17 @@ impl App {
         self.chat_dragging = false;
         self.chat_drag_moved = false;
         let ctx = self.hit_context();
-        if let Some(HitTarget::ZekiChatCard) =
-            hit_test::target_at(lparam, self.host.dpi(), &self.springs, &ctx)
-        {
-            self.toggle_chat_large();
+        match hit_test::target_at(lparam, self.host.dpi(), &self.springs, &ctx) {
+            Some(HitTarget::ZekiChatCard) => {
+                self.toggle_chat_large();
+            }
+            Some(HitTarget::CicadaCard) => {
+                self.cicada_large = !self.cicada_large;
+                self.apply_pill_mode();
+                self.update_timer();
+                let _ = self.render();
+            }
+            _ => {}
         }
     }
 
@@ -883,12 +1022,30 @@ impl App {
             needs_render = true;
         }
 
-        // 2c. Auto-Hide Dynamic Island after short idle period when enabled
+        // 2b-ii. Safety auto-collapse if expanded while mouse is no longer hovering the island
+        if self.expanded
+            && !self.chat_focused
+            && !self.assistant_snapshot.phase.is_busy()
+            && !self.chat_dragging
+            && !hit_test::cursor_over_pill(self.host.hwnd(), self.host.dpi(), &self.springs)
+        {
+            self.hovered = false;
+            self.tracking_leave = false;
+            self.hovered_target = None;
+            self.assistant_pinned_open = false;
+            self.cursor_outside_since = None;
+            self.set_expanded(false);
+            needs_render = true;
+        }
+
+        // 2c. Auto-Hide Dynamic Island smoothly into top edge after 10s idle when enabled
         if self.auto_hide_enabled && !self.manual_hidden && !self.auto_hidden {
             if self.is_auto_hide_idle() {
                 if self.last_visible_activity.elapsed().as_secs() >= AUTO_HIDE_DELAY_SECS {
                     self.auto_hidden = true;
-                    self.stop_timer();
+                    self.hovered_target = None;
+                    self.apply_pill_mode();
+                    self.update_timer();
                     let _ = self.render();
                     return;
                 }
@@ -912,8 +1069,18 @@ impl App {
             self.clipboard.copied_flash_until = None;
             needs_render = true;
         }
+        if let Some(until) = self.cicada_copied_flash_until {
+            if Instant::now() >= until {
+                self.cicada_copied_flash_until = None;
+                needs_render = true;
+            }
+        }
 
-        if needs_render && self.timer_interval_ms.is_none() {
+        if needs_render
+            && self.timer_interval_ms.is_none()
+            && !self.auto_hidden
+            && !self.manual_hidden
+        {
             let _ = self.render();
         }
     }
@@ -1009,7 +1176,9 @@ impl App {
     }
 
     unsafe fn apply_pill_mode(&mut self) {
-        let mode = if self.hud_visible() {
+        let mode = if self.auto_hidden && !self.manual_hidden {
+            PillMode::AutoHidden
+        } else if self.hud_visible() {
             PillMode::Hud
         } else if self.expanded {
             if self.expanded_tab == ExpandedTab::Zeki
@@ -1020,12 +1189,22 @@ impl App {
                 } else {
                     PillMode::ExpandedChat
                 }
+            } else if self.expanded_tab == ExpandedTab::Cicada {
+                if self.cicada_large {
+                    PillMode::ExpandedChatLarge
+                } else {
+                    PillMode::ExpandedCicada
+                }
             } else {
                 PillMode::Expanded
             }
         } else if self.toast_visible() {
             PillMode::Notification
-        } else if self.zeki.state().is_assistant_active()
+        } else if self.cicada_subtitle_bar {
+            PillMode::CicadaSubtitle
+        } else if self.cicada_snapshot.active
+            || self.cicada_snapshot.quick_reply_recording
+            || self.zeki.state().is_assistant_active()
             || self.assistant_snapshot.phase.is_busy()
         {
             PillMode::Assistant
@@ -1040,6 +1219,7 @@ impl App {
     unsafe fn on_mouse_move(&mut self, lparam: LPARAM) {
         self.reveal_from_auto_hide();
         self.zeki.record_interaction();
+        self.cursor_outside_since = None;
 
         if self.chat_dragging {
             let y_px = ((lparam.0 as u32 >> 16) & 0xFFFF) as u16 as i16 as f32;
@@ -1069,7 +1249,7 @@ impl App {
         if !self.hovered {
             self.remember_foreground_window();
             self.hovered = true;
-            if !self.toast_visible() {
+            if !self.toast_visible() && !self.cicada_subtitle_bar {
                 self.set_expanded(true);
             }
         }
@@ -1089,14 +1269,21 @@ impl App {
         self.tracking_leave = false;
         self.hovered = false;
         self.hovered_target = None;
+        self.last_visible_activity = Instant::now();
         self.chat_dragging = false;
         self.chat_drag_moved = false;
-        // Keep the island open while listening, streaming, or pinned in Chat mode
-        if self.assistant_pinned_open
-            && (self.expanded_tab == ExpandedTab::Zeki || self.assistant_snapshot.phase.is_busy())
+        // Only keep expanded while actively typing a draft in chat input or while an AI turn is mid-flight.
+        // Once idle/done and mouse leaves, always auto-minimize smoothly!
+        if (self.chat_focused && !self.chat_input.is_empty())
+            || self.assistant_snapshot.phase.is_busy()
         {
             return;
         }
+        if self.chat_focused {
+            self.set_chat_focus(false);
+        }
+        self.assistant_pinned_open = false;
+        self.cursor_outside_since = None;
         self.set_expanded(false);
     }
 
@@ -1217,6 +1404,127 @@ impl App {
                     self.attached_file = None;
                     self.assistant_pinned_open = false;
                     self.assistant.clear_conversation();
+                }
+                HitTarget::CicadaToggleListen => {
+                    let was_active = self.cicada_snapshot.active;
+                    self.cicada.toggle_listening();
+                    self.cicada_snapshot = self.cicada.snapshot();
+                    if was_active && self.cicada_snapshot.has_entries() {
+                        let _ = self.cicada.save_markdown_file();
+                    }
+                    self.apply_pill_mode();
+                    self.update_timer();
+                    let _ = self.render();
+                }
+                HitTarget::CicadaToggleMic => {
+                    self.cicada.toggle_mic();
+                    self.cicada_snapshot = self.cicada.snapshot();
+                    let _ = self.render();
+                }
+                HitTarget::CicadaQuickReply => {
+                    self.cicada.toggle_quick_reply();
+                    self.cicada_snapshot = self.cicada.snapshot();
+                    self.apply_pill_mode();
+                    self.update_timer();
+                    let _ = self.render();
+                }
+                HitTarget::CicadaToggleSubtitleBar => {
+                    self.cicada_subtitle_bar = !self.cicada_subtitle_bar;
+                    if self.cicada_subtitle_bar {
+                        self.expanded = false;
+                        self.hovered_target = None;
+                    } else {
+                        self.cicada_click_through = false;
+                    }
+                    self.apply_pill_mode();
+                    self.update_timer();
+                    let _ = self.render();
+                }
+                HitTarget::CicadaToggleClickThrough => {
+                    self.cicada_click_through = !self.cicada_click_through;
+                    let _ = self.render();
+                }
+                HitTarget::CicadaExpandFromBar => {
+                    self.cicada_click_through = false;
+                    self.cicada_subtitle_bar = false;
+                    self.expanded_tab = ExpandedTab::Cicada;
+                    self.set_expanded(true);
+                    let _ = self.render();
+                }
+                HitTarget::CicadaCycleLang => {
+                    self.cicada.cycle_target_language();
+                    self.cicada_snapshot = self.cicada.snapshot();
+                    let _ = self.render();
+                }
+                HitTarget::CicadaToggleOriginal => {
+                    self.cicada.toggle_show_original();
+                    self.cicada_snapshot = self.cicada.snapshot();
+                    let _ = self.render();
+                }
+                HitTarget::CicadaToggleSize => {
+                    self.cicada_large = !self.cicada_large;
+                    self.apply_pill_mode();
+                    self.update_timer();
+                    let _ = self.render();
+                }
+                HitTarget::CicadaCopyTranscript => {
+                    let md = self.cicada.format_markdown();
+                    if !md.is_empty() && self.clipboard.copy_text(&md) {
+                        let _ = self.cicada.save_markdown_file();
+                        self.cicada_copied_flash_until =
+                            Some(Instant::now() + std::time::Duration::from_millis(1600));
+                        self.zeki.trigger_action_happy();
+                        self.update_timer();
+                        let _ = self.render();
+                    }
+                }
+                HitTarget::CicadaCopyQuickReply => {
+                    if let Some(qr) = &self.cicada_snapshot.last_quick_reply {
+                        if self.clipboard.copy_text(&qr.translation) {
+                            self.cicada_copied_flash_until =
+                                Some(Instant::now() + std::time::Duration::from_millis(1400));
+                            self.zeki.trigger_action_happy();
+                            let _ = self.render();
+                        }
+                    }
+                }
+                HitTarget::CicadaSummarize => {
+                    if let Some(prompt) = self.cicada.build_summary_prompt() {
+                        let _ = self.cicada.save_markdown_file();
+                        self.cicada_subtitle_bar = false;
+                        self.cicada_click_through = false;
+                        self.expanded_tab = ExpandedTab::Zeki;
+                        self.chat_mode = true;
+                        self.chat_auto_scroll = true;
+                        self.assistant_pinned_open = true;
+                        self.set_expanded(true);
+                        let req_ctx = self.build_request_context();
+                        self.assistant.send_text(prompt, req_ctx);
+                        self.apply_pill_mode();
+                        self.update_timer();
+                        let _ = self.render();
+                    }
+                }
+                HitTarget::CicadaAskZeki => {
+                    self.cicada_subtitle_bar = false;
+                    self.cicada_click_through = false;
+                    self.chat_mode = true;
+                    self.chat_auto_scroll = true;
+                    self.assistant_pinned_open = true;
+                    self.set_chat_focus(true);
+                    self.apply_pill_mode();
+                    self.update_timer();
+                    let _ = self.render();
+                }
+                HitTarget::CicadaClear => {
+                    self.cicada.clear_transcript();
+                    self.cicada_snapshot = self.cicada.snapshot();
+                    self.cicada_scroll_y = 0.0;
+                    self.cicada_auto_scroll = true;
+                    let _ = self.render();
+                }
+                HitTarget::CicadaCard => {
+                    return;
                 }
                 HitTarget::MediaControl(control) => {
                     self.media.control(control);
@@ -1376,7 +1684,16 @@ unsafe extern "system" fn wndproc(
     match message {
         WM_NCHITTEST => {
             let hit = with_app(|app| {
-                hit_test::handle(hwnd, lparam, app.host.dpi(), &app.springs, app.auto_hidden)
+                let click_through =
+                    !app.expanded && app.cicada_subtitle_bar && app.cicada_click_through;
+                hit_test::handle(
+                    hwnd,
+                    lparam,
+                    app.host.dpi(),
+                    &app.springs,
+                    app.auto_hidden,
+                    click_through,
+                )
             });
             hit.unwrap_or_else(|| DefWindowProcW(hwnd, message, wparam, lparam))
         }
@@ -1469,6 +1786,13 @@ unsafe extern "system" fn wndproc(
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
         }
+        WM_CICADA_UPDATED => {
+            if with_app_mut(|app| app.on_cicada_updated()).is_some() {
+                LRESULT(0)
+            } else {
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
+        }
         WM_SETTINGS_SAVED => {
             with_app_mut(|app| {
                 let cfg = AssistantConfig::load();
@@ -1488,6 +1812,8 @@ unsafe extern "system" fn wndproc(
                     app.last_visible_activity = Instant::now();
                 }
                 app.assistant.refresh_config_status();
+                app.cicada.refresh_from_config();
+                app.cicada_snapshot = app.cicada.snapshot();
                 app.zeki.trigger_action_happy();
                 app.update_timer();
                 let _ = app.render();

@@ -32,13 +32,15 @@ fn contains(rect: &RECT, x: i32, y: i32) -> bool {
     x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
 
-/// Handles `WM_NCHITTEST` for the pill (or a thin top-edge reveal strip when auto-hidden).
+/// Handles `WM_NCHITTEST` for the pill (or a thin top-edge reveal strip when auto-hidden,
+/// or selective click-through when Cicada Live Subtitle Bar is locked for click-through).
 pub unsafe fn handle(
     hwnd: HWND,
     lparam: LPARAM,
     dpi: u32,
     springs: &PillSprings,
     auto_hidden: bool,
+    cicada_click_through: bool,
 ) -> LRESULT {
     let mut point = POINT {
         x: signed_loword(lparam.0),
@@ -50,11 +52,12 @@ pub unsafe fn handle(
     }
 
     if auto_hidden {
-        // Thin 5px top-center reveal strip so moving cursor to top edge brings the island back
-        let strip_w = to_physical(220.0, dpi);
-        let left = to_physical((CANVAS_WIDTH_LOGICAL - 220.0) / 2.0, dpi).floor() as i32;
+        // Generous 12px top-center reveal strip matching the alpha-backed sensor in d2d.rs
+        // so moving the cursor to the top edge reliably brings the island back.
+        let strip_w = to_physical(240.0, dpi);
+        let left = to_physical((CANVAS_WIDTH_LOGICAL - 240.0) / 2.0, dpi).floor() as i32;
         let right = (left as f32 + strip_w).ceil() as i32;
-        let bottom = to_physical(5.0, dpi).ceil().max(4.0) as i32;
+        let bottom = to_physical(12.0, dpi).ceil().max(10.0) as i32;
         let strip = RECT {
             left,
             top: 0,
@@ -67,22 +70,58 @@ pub unsafe fn handle(
         return LRESULT(HTTRANSPARENT as isize);
     }
 
-    if contains(&pill_rect(dpi, springs), point.x, point.y) {
-        LRESULT(HTCLIENT as isize)
-    } else {
-        LRESULT(HTTRANSPARENT as isize)
+    let pill = pill_rect(dpi, springs);
+
+    // In Cicada Click-Through Subtitle Bar mode, pass all clicks through to the meeting
+    // app underneath EXCEPT the compact top-right control cluster so user can still unlock/stop.
+    if cicada_click_through {
+        if !contains(&pill, point.x, point.y) {
+            return LRESULT(HTTRANSPARENT as isize);
+        }
+        let ctrl_w = to_physical(156.0, dpi).ceil() as i32;
+        let ctrl_h = to_physical(34.0, dpi).ceil() as i32;
+        let ctrl_zone = RECT {
+            left: pill.right - ctrl_w,
+            top: pill.top,
+            right: pill.right,
+            bottom: pill.top + ctrl_h,
+        };
+        if contains(&ctrl_zone, point.x, point.y) {
+            return LRESULT(HTCLIENT as isize);
+        }
+        return LRESULT(HTTRANSPARENT as isize);
     }
+
+    // Extend hover hit-zone flush to top screen edge (y=0) above the pill so pushing
+    // the cursor all the way to the top bezel never causes a WM_MOUSELEAVE bounce.
+    let hover_rect = RECT {
+        left: pill.left,
+        top: 0,
+        right: pill.right,
+        bottom: pill.bottom,
+    };
+    if !contains(&hover_rect, point.x, point.y) {
+        return LRESULT(HTTRANSPARENT as isize);
+    }
+
+    LRESULT(HTCLIENT as isize)
 }
 
-/// Used by the Escape-key hook: is the system cursor over the pill right now?
+/// Used by the Escape-key hook & mouse-leave watchdog: is the cursor over the pill or its top bezel?
 pub unsafe fn cursor_over_pill(hwnd: HWND, dpi: u32, springs: &PillSprings) -> bool {
     let mut point = POINT::default();
     if GetCursorPos(&mut point).is_err() {
         return false;
     }
 
-    ScreenToClient(hwnd, &mut point).as_bool()
-        && contains(&pill_rect(dpi, springs), point.x, point.y)
+    let pill = pill_rect(dpi, springs);
+    let hover_rect = RECT {
+        left: pill.left,
+        top: 0,
+        right: pill.right,
+        bottom: pill.bottom,
+    };
+    ScreenToClient(hwnd, &mut point).as_bool() && contains(&hover_rect, point.x, point.y)
 }
 
 /// Maps client coordinates in `WM_LBUTTONUP` lParam to an interactive hit target.

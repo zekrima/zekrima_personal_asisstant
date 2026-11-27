@@ -1,5 +1,9 @@
 //! Damped harmonic spring physics used by the island geometry.
 
+pub const AUTO_HIDDEN_WIDTH: f32 = 128.0;
+pub const AUTO_HIDDEN_HEIGHT: f32 = 5.0;
+pub const AUTO_HIDDEN_RADIUS: f32 = 2.5;
+
 pub const COLLAPSED_WIDTH: f32 = 178.0;
 pub const COLLAPSED_BADGE_WIDTH: f32 = 232.0;
 pub const COLLAPSED_HEIGHT: f32 = 34.0;
@@ -29,6 +33,15 @@ pub const EXPANDED_CHAT_HEIGHT: f32 = 310.0;
 /// Large expanded chat geometry (toggled by double-clicking the chat box or clicking Expand).
 pub const EXPANDED_CHAT_LARGE_WIDTH: f32 = 640.0;
 pub const EXPANDED_CHAT_LARGE_HEIGHT: f32 = 470.0;
+
+/// Cicada Mode: Live Subtitle Bar geometry (sleek translucent 2-3 line bilingual bar).
+pub const CICADA_SUBTITLE_WIDTH: f32 = 620.0;
+pub const CICADA_SUBTITLE_HEIGHT: f32 = 94.0;
+pub const CICADA_SUBTITLE_RADIUS: f32 = 24.0;
+
+/// Cicada Mode: Expanded Transcript panel geometry.
+pub const EXPANDED_CICADA_WIDTH: f32 = 560.0;
+pub const EXPANDED_CICADA_HEIGHT: f32 = 340.0;
 
 const REST_DISTANCE: f32 = 0.05;
 const REST_VELOCITY: f32 = 0.05;
@@ -91,12 +104,15 @@ impl Spring {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PillMode {
+    AutoHidden,
     Collapsed,
     CollapsedWithBadge,
     Assistant,
+    CicadaSubtitle,
     Hud,
     Notification,
     Expanded,
+    ExpandedCicada,
     ExpandedChat,
     ExpandedChatLarge,
 }
@@ -119,14 +135,25 @@ impl PillSprings {
 
     pub fn set_mode(&mut self, mode: PillMode) -> bool {
         let (w, h, r) = match mode {
+            PillMode::AutoHidden => (AUTO_HIDDEN_WIDTH, AUTO_HIDDEN_HEIGHT, AUTO_HIDDEN_RADIUS),
             PillMode::Collapsed => (COLLAPSED_WIDTH, COLLAPSED_HEIGHT, COLLAPSED_RADIUS),
             PillMode::CollapsedWithBadge => {
                 (COLLAPSED_BADGE_WIDTH, COLLAPSED_HEIGHT, COLLAPSED_RADIUS)
             }
             PillMode::Assistant => (ASSISTANT_WIDTH, ASSISTANT_HEIGHT, ASSISTANT_RADIUS),
+            PillMode::CicadaSubtitle => (
+                CICADA_SUBTITLE_WIDTH,
+                CICADA_SUBTITLE_HEIGHT,
+                CICADA_SUBTITLE_RADIUS,
+            ),
             PillMode::Hud => (HUD_WIDTH, HUD_HEIGHT, HUD_RADIUS),
             PillMode::Notification => (NOTIFICATION_WIDTH, NOTIFICATION_HEIGHT, NOTIFICATION_RADIUS),
             PillMode::Expanded => (EXPANDED_WIDTH, EXPANDED_HEIGHT, EXPANDED_RADIUS),
+            PillMode::ExpandedCicada => (
+                EXPANDED_CICADA_WIDTH,
+                EXPANDED_CICADA_HEIGHT,
+                EXPANDED_RADIUS,
+            ),
             PillMode::ExpandedChat => {
                 (EXPANDED_CHAT_WIDTH, EXPANDED_CHAT_HEIGHT, EXPANDED_RADIUS)
             }

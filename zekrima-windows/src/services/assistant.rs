@@ -78,6 +78,8 @@ pub struct RequestContext {
     pub notifications: NotificationSnapshot,
     pub clipboard_preview: Option<String>,
     pub attachment: Option<FileAttachment>,
+    /// Live or recent Cicada meeting bilingual transcript for Live Q&A & Auto-Summary.
+    pub meeting_transcript: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -517,13 +519,22 @@ fn prepare_context_and_screen(
         }
     }
 
+    let meeting_section = match &req_ctx.meeting_transcript {
+        Some(tr) if !tr.trim().is_empty() => format!(
+            "\n\n[LIVE MEETING TRANSCRIPT (CICADA MODE)]\n{}\n[END MEETING TRANSCRIPT]\nGunakan transkrip rapat ini bila pengguna menanyakan isi rapat, revisi, keputusan, atau ringkasan.",
+            tr
+        ),
+        _ => String::new(),
+    };
+
     let sys_prompt = format!(
-        "{}{}{}\n\n{}{}",
+        "{}{}{}\n\n{}{}{}",
         cfg.system_prompt,
         tools::TOOL_SYSTEM_INSTRUCTIONS,
         privacy_note,
         context_note,
-        file_text_section
+        file_text_section,
+        meeting_section
     );
 
     let jpeg = if screen_enabled {
@@ -879,7 +890,7 @@ fn stream_openai_with_vision_fallback(
     )
 }
 
-fn effective_llm_provider(cfg: &AssistantConfig) -> Option<LlmProvider> {
+pub(crate) fn effective_llm_provider(cfg: &AssistantConfig) -> Option<LlmProvider> {
     if !cfg.api_key_for(cfg.llm_provider).is_empty() {
         return Some(cfg.llm_provider);
     }
@@ -998,7 +1009,7 @@ fn transcribe_whisper(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn transcribe_whisper_custom(
+pub(crate) fn transcribe_whisper_custom(
     host: &str,
     port: u16,
     path: &str,
@@ -1440,7 +1451,7 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn parse_url(url: &str) -> (String, u16, String, bool) {
+pub(crate) fn parse_url(url: &str) -> (String, u16, String, bool) {
     let trimmed = url.trim().trim_end_matches('/');
     let (secure, rest) = if let Some(r) = trimmed.strip_prefix("https://") {
         (true, r)
@@ -1543,7 +1554,7 @@ fn open_winhttp_request(
     }
 }
 
-fn http_post_raw(
+pub(crate) fn http_post_raw(
     host: &str,
     port: u16,
     path: &str,
@@ -1572,6 +1583,91 @@ fn http_post_raw(
     }
 
     Ok((status, out))
+}
+
+pub(crate) fn http_get_raw(
+    host: &str,
+    port: u16,
+    path: &str,
+    secure: bool,
+    headers: &str,
+) -> Result<(u32, Vec<u8>), String> {
+    unsafe {
+        let session_raw = WinHttpOpen(
+            w!("ZekrimaCicada/0.4"),
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            PCWSTR::null(),
+            PCWSTR::null(),
+            0,
+        );
+        if session_raw.is_null() {
+            return Err("WinHttpOpen gagal".to_string());
+        }
+        let session = WinHttpHandle(session_raw);
+        let _ = WinHttpSetTimeouts(session.0, 6_000, 6_000, 8_000, 12_000);
+
+        let host_w = to_wide(host);
+        let conn_raw = WinHttpConnect(session.0, PCWSTR(host_w.as_ptr()), port, 0);
+        if conn_raw.is_null() {
+            return Err(format!("Tidak bisa terhubung ke {host}"));
+        }
+        let conn = WinHttpHandle(conn_raw);
+
+        let path_w = to_wide(path);
+        let flags = if secure { WINHTTP_FLAG_SECURE } else { Default::default() };
+        let req_raw = WinHttpOpenRequest(
+            conn.0,
+            w!("GET"),
+            PCWSTR(path_w.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            std::ptr::null(),
+            flags,
+        );
+        if req_raw.is_null() {
+            return Err("WinHttpOpenRequest gagal".to_string());
+        }
+        let req = WinHttpHandle(req_raw);
+
+        let headers_w: Vec<u16> = headers.encode_utf16().collect();
+        WinHttpSendRequest(
+            req.0,
+            if headers_w.is_empty() { None } else { Some(&headers_w) },
+            None,
+            0,
+            0,
+            0,
+        )
+        .map_err(|_| "Gagal mengirim HTTP GET".to_string())?;
+
+        WinHttpReceiveResponse(req.0, std::ptr::null_mut())
+            .map_err(|_| "Tidak ada respons HTTP GET".to_string())?;
+
+        let mut status_code: u32 = 0;
+        let mut status_size = std::mem::size_of::<u32>() as u32;
+        let _ = WinHttpQueryHeaders(
+            req.0,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            PCWSTR::null(),
+            Some(&mut status_code as *mut u32 as *mut c_void),
+            &mut status_size,
+            std::ptr::null_mut(),
+        );
+
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let mut read = 0u32;
+            if WinHttpReadData(req.0, buf.as_mut_ptr() as *mut c_void, buf.len() as u32, &mut read)
+                .is_err()
+                || read == 0
+            {
+                break;
+            }
+            out.extend_from_slice(&buf[..read as usize]);
+        }
+        Ok((status_code, out))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1666,7 +1762,7 @@ where
 // Lightweight JSON & Base64 helpers (zero external dependencies)
 // =============================================================================
 
-fn json_escape(input: &str) -> String {
+pub(crate) fn json_escape(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 16);
     for ch in input.chars() {
         match ch {
@@ -1758,7 +1854,7 @@ fn read_hex4<I: Iterator<Item = char>>(iter: &mut I) -> Option<u16> {
     Some(val)
 }
 
-fn base64_encode(input: &[u8]) -> String {
+pub(crate) fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -1807,6 +1903,197 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+// =============================================================================
+// Live API Model Discovery (Auto-detect available models in Settings)
+// =============================================================================
+
+/// Queries the provider's `/models` API using the given key/base URL and returns
+/// a clean, prioritized list of available chat/multimodal model IDs.
+pub fn fetch_available_models(
+    provider: LlmProvider,
+    api_key: &str,
+    custom_base_url: &str,
+) -> Result<Vec<String>, String> {
+    let key = api_key.trim();
+    if key.is_empty() && !matches!(provider, LlmProvider::OpenRouter | LlmProvider::OpenAi) {
+        return Err("Masukkan API key untuk mendeteksi model otomatis.".to_string());
+    }
+
+    let (status, resp_bytes) = match provider {
+        LlmProvider::Gemini => {
+            let path = format!("/v1beta/models?pageSize=200&key={key}");
+            http_get_raw("generativelanguage.googleapis.com", 443, &path, true, "")?
+        }
+        LlmProvider::OpenRouter => {
+            let headers = if key.is_empty() {
+                "Accept: application/json\r\n".to_string()
+            } else {
+                format!("Authorization: Bearer {key}\r\nAccept: application/json\r\n")
+            };
+            http_get_raw("openrouter.ai", 443, "/api/v1/models", true, &headers)?
+        }
+        LlmProvider::OpenCode | LlmProvider::Nvidia | LlmProvider::Groq | LlmProvider::OpenAi => {
+            let base = if provider == LlmProvider::OpenAi && !custom_base_url.trim().is_empty() {
+                custom_base_url.trim()
+            } else {
+                provider.default_base_url()
+            };
+            let (host, port, base_path, secure) = parse_url(base);
+            let path = format!("{}/models", base_path.trim_end_matches('/'));
+            let headers = if key.is_empty() {
+                "Accept: application/json\r\n".to_string()
+            } else {
+                format!("Authorization: Bearer {key}\r\nAccept: application/json\r\n")
+            };
+            http_get_raw(&host, port, &path, secure, &headers)?
+        }
+    };
+
+    let body = String::from_utf8_lossy(&resp_bytes);
+    if !(200..300).contains(&status) {
+        let msg = extract_json_string_field(&body, "message")
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        return Err(if status == 401 || status == 403 {
+            format!("API key tidak valid ({status}): {msg}")
+        } else {
+            format!("Gagal memuat model ({status}): {msg}")
+        });
+    }
+
+    let models = match provider {
+        LlmProvider::Gemini => parse_gemini_models_json(&body),
+        _ => parse_openai_models_json(&body, provider),
+    };
+
+    if models.is_empty() {
+        return Err("API merespons sukses, tetapi daftar model kosong.".to_string());
+    }
+    Ok(models)
+}
+
+fn parse_gemini_models_json(json: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let needle = "\"name\"";
+    let mut positions = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = json[from..].find(needle) {
+        let pos = from + rel;
+        positions.push(pos);
+        from = pos + needle.len();
+    }
+
+    for (idx, &start) in positions.iter().enumerate() {
+        let end = positions.get(idx + 1).copied().unwrap_or(json.len());
+        let block = &json[start..end];
+        let Some(raw_name) = extract_json_string_field(block, "name") else {
+            continue;
+        };
+        let Some(model_id) = raw_name.strip_prefix("models/") else {
+            continue;
+        };
+        // Only keep generative chat/multimodal models (skip pure embedding / video / image-only)
+        let lower = model_id.to_ascii_lowercase();
+        let supports_gen = block.contains("generateContent") || !block.contains("supportedGenerationMethods");
+        let is_non_chat = lower.contains("embedding")
+            || lower.contains("aqa")
+            || lower.contains("imagen")
+            || lower.contains("veo")
+            || lower.contains("lyria");
+        if supports_gen && !is_non_chat && seen.insert(model_id.to_string()) {
+            found.push(model_id.to_string());
+        }
+    }
+
+    // Prioritize newer Gemini Flash / Pro models at the top
+    found.sort_by(|a, b| {
+        let score = |s: &str| -> (u8, String) {
+            let l = s.to_ascii_lowercase();
+            let tier = if l.contains("tts") {
+                3
+            } else if l.starts_with("gemini-") && l.contains("flash") && !l.contains("1.5") {
+                0
+            } else if l.starts_with("gemini-") {
+                1
+            } else {
+                2
+            };
+            (tier, l)
+        };
+        let sa = score(a);
+        let sb = score(b);
+        sa.0.cmp(&sb.0).then_with(|| sb.1.cmp(&sa.1))
+    });
+    found.truncate(120);
+    found
+}
+
+fn parse_openai_models_json(json: &str, provider: LlmProvider) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Extract every `"id": "..."` field (standard OpenAI / OpenRouter / Groq / NVIDIA / OpenCode)
+    let bytes = json.as_bytes();
+    let pattern = "\"id\"";
+    let mut search_from = 0usize;
+    while let Some(rel) = json[search_from..].find(pattern) {
+        let mut idx = search_from + rel + pattern.len();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx < bytes.len() && bytes[idx] == b':' {
+            idx += 1;
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            if idx < bytes.len() && bytes[idx] == b'"' {
+                if let Some(id) = parse_json_string(&json[idx + 1..]) {
+                    let clean = id.trim();
+                    let lower = clean.to_ascii_lowercase();
+                    let skip = clean.is_empty()
+                        || clean.len() > 120
+                        || lower.contains("whisper")
+                        || lower.contains("embedding")
+                        || lower.contains("moderation")
+                        || lower.contains("dall-e")
+                        || lower.contains("tts-");
+                    if !skip && seen.insert(clean.to_string()) {
+                        found.push(clean.to_string());
+                    }
+                }
+            }
+        }
+        search_from = idx.max(search_from + rel + pattern.len());
+    }
+
+    match provider {
+        LlmProvider::OpenRouter => {
+            // Put `openrouter/free` and `:free` models first so free models are easy to pick
+            found.sort_by(|a, b| {
+                let rank = |s: &str| -> u8 {
+                    if s == "openrouter/free" {
+                        0
+                    } else if s.ends_with(":free") {
+                        1
+                    } else {
+                        2
+                    }
+                };
+                rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
+            });
+            if !found.iter().any(|m| m == "openrouter/free") {
+                found.insert(0, "openrouter/free".to_string());
+            }
+        }
+        _ => {
+            found.sort();
+        }
+    }
+
+    found.truncate(160);
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1840,6 +2127,20 @@ mod tests {
         assert_eq!(
             parse_url("http://localhost:11434/v1/"),
             ("localhost".to_string(), 11434, "/v1".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn parses_gemini_and_openrouter_model_lists() {
+        let gem = r#"{"models":[{"name":"models/text-embedding-004","supportedGenerationMethods":["embedContent"]},{"name":"models/gemini-3.8-flash","supportedGenerationMethods":["generateContent"]},{"name":"models/gemini-2.5-pro","supportedGenerationMethods":["generateContent"]}]}"#;
+        let gm = parse_gemini_models_json(gem);
+        assert_eq!(gm, vec!["gemini-3.8-flash", "gemini-2.5-pro"]);
+
+        let or = r#"{"data":[{"id":"openai/gpt-4o"},{"id":"google/gemma-3-27b-it:free"},{"id":"openrouter/free"}]}"#;
+        let om = parse_openai_models_json(or, LlmProvider::OpenRouter);
+        assert_eq!(
+            om,
+            vec!["openrouter/free", "google/gemma-3-27b-it:free", "openai/gpt-4o"]
         );
     }
 }
